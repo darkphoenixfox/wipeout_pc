@@ -8,13 +8,18 @@ graphics are translated to Vulkan by the shadPS4 video core. There is no CPU emu
 > **Status: playable, in active development. Menus and races (HD and 2048) play above 60 FPS.**
 > See [Progress](#progress).
 
+This fork adds more render resolutions and aspect ratios (4K, 21:9, 32:9, 4:3), a HUD shape
+setting, and **3D**: side by side for 3D displays, or woven for LeiaSR displays such as the
+Samsung Odyssey 3D. See [What this fork adds](#what-this-fork-adds).
+
 For contributors: [build and debug on Windows](docs/windows-debug.md), or optionally [edit from WSL2](docs/windows-debug-wsl.md). Debugging scripts and tests are versioned; GDB and the compiler are installed as development dependencies.
 
 ## Download and play (Windows)
 
 1. Download `wipeout-windows.zip` from the
-   [latest release](https://github.com/AbdelmoumenDeghbouche/wipeout_pc/releases/latest)
-   and extract it.
+   [latest release](https://github.com/darkphoenixfox/wipeout_pc/releases/latest) of this fork
+   (the [original project's releases](https://github.com/AbdelmoumenDeghbouche/wipeout_pc/releases)
+   do not have the features below) and extract it.
 2. Open `WipEout.exe`, choose your game folder (the one with `eboot.bin`) and click **PLAY**.
 
 Requirements: Windows 10 or 11 (64-bit), a CPU with AVX, a GPU with Vulkan 1.3. The
@@ -23,6 +28,29 @@ Requirements: Windows 10 or 11 (64-bit), a CPU with AVX, a GPU with Vulkan 1.3. 
 > **No game files are included.** You need your own copy of the game, dumped from your own PS4.
 > This project is not affiliated with Sony Interactive Entertainment, XDev, Clever Beans or EPOS
 > Game Studios. WipEout is a trademark of Sony Interactive Entertainment.
+
+## What this fork adds
+
+| Feature | Where | Notes |
+|---|---|---|
+| **More render resolutions** | Launcher (Home or Graphics: Aspect ratio, Render resolution) or in game (Insert > Performance) | 16:9: native, 1440p, **4K**. 21:9: 2560x1080, 3440x1440, **3840x1600**, 5120x2160. 32:9: **5120x1440**. 4:3: **1440x1080, 1920x1440, 2048x1536, 2560x1920**. The lists show only the sizes WipEout has a patch for. |
+| **Wider and narrower screens** | Automatic | 21:9 and 32:9 show more at the sides (32:9 also widens the side culling so nothing vanishes at the edges). 4:3 keeps the full 16:9 side view and shows more at the top and bottom. |
+| **HUD shape** | Launcher (Graphics > Resolution) | Draws the HUD and menus in a 16:9, 4:3, 16:10, 21:9 or 32:9 area in the middle of the screen, or stretched over the whole screen. |
+| **3D side by side** | Launcher (Graphics > 3D) or in game (Insert > Image > 3D) | Both eyes built from the scene's depth, for 3D displays and viewers that take side-by-side input. The HUD stays on the screen plane. Depth, focus, pop-out and swap eyes change live while racing. |
+| **LeiaSR displays** | 3D output: **LeiaSR display** | For the Samsung Odyssey 3D and Acer SpatialLabs: both eyes at full width, woven by the display's own LeiaSR weaver with eye tracking. Needs the SR Platform (the display's software). |
+
+### Using 3D
+
+- **Side by side:** tick **3D side by side**, then turn on your display's side-by-side 3D mode.
+  Choose a 16:9 render resolution for a 16:9 display.
+- **LeiaSR display (Samsung Odyssey 3D, Acer SpatialLabs):** also set **3D output** to
+  **LeiaSR display**. Put the game window on the 3D display, **borderless** or **fullscreen**, so
+  it covers the screen exactly: the weave is made for the screen's own pixels. 4K matches the
+  Odyssey 3D. The display's SR Platform must be installed and running.
+- Tune **3D depth** (how far the distance goes into the screen), **3D focus** (what sits on the
+  screen plane) and **3D pop-out** (how far your ship comes out) while racing: Insert > Image > 3D.
+- Not available with HDR on; LeiaSR output costs some frame rate. Cutscene videos are flat. If
+  3D falls back to side by side, `user/last_run.log` gives the reason (lines starting `LeiaSR:`).
 
 ## Help make it better
 
@@ -50,9 +78,10 @@ Thanks to everyone who has played, tested and reported so far!
 | Game speed | Done: the game runs on real time at any frame rate |
 | Frame rate above 60 FPS | Done: up to 240 FPS, set by the frame rate limit (110–150 FPS in 2048 races on an RTX 4070 Laptop) |
 | Graphics: Metro Park terrain | Fixed (shader recompiler, #5) |
-| Render resolutions: native 1080p, 2560x1440, 3840x2160, 2560x1080, 3440x1440, 5120x2160 | Done: pick one in the in-game **Render resolution** menu (Insert key) (`patches/WipEout_Omega_Collection.xml`, #2). The HUD stays 16:9 in the middle of wider screens. 3840x2160 and 5120x2160 need more than 8 GB of video memory |
-| 3D | Side by side from the scene's depth (the HUD stays on the screen), for 3D displays that convert side-by-side input; or woven for LeiaSR displays (Samsung Odyssey 3D, Acer SpatialLabs) with eye tracking and both eyes at full width. Launcher: Graphics > 3D; in game: Insert > Image. Not in HDR. Building the LeiaSR bridge: `gpu/leiasr_bridge/CMakeLists.txt` |
-| More aspect ratios: 3840x1600 (21:9), 5120x1440 (32:9), 1440x1080, 1920x1440, 2048x1536, 2560x1920 (4:3) | Not tested in game yet. 21:9 and 32:9 widen the view (32:9 also widens the side culling); 4:3 keeps the 16:9 horizontal view and shows more at the top and bottom, with the HUD 16:9 across the width. Choose in the launcher (Home or Graphics: Aspect ratio, Render resolution) or in the game. **HUD shape** (launcher) draws the HUD and menus in 16:9, 4:3, 16:10, 21:9, 32:9 or over the whole screen. New sizes: `tools/make_wipeout_resolution_patch.py` |
+| Render resolutions: native 1080p, 2560x1440, 3840x2160, 2560x1080, 3440x1440, 5120x2160 | Done: pick one in the launcher or the in-game **Render resolution** menu (Insert key) (`patches/WipEout_Omega_Collection.xml`, #2). 3840x2160 and 5120x2160 need more than 8 GB of video memory |
+| More aspect ratios: 3840x1600 (21:9), 5120x1440 (32:9), 1440x1080, 1920x1440, 2048x1536, 2560x1920 (4:3) | Done: 5120x1440 and 4:3 played; 3840x1600 not tested yet. New sizes: `tools/make_wipeout_resolution_patch.py` |
+| HUD on other screen shapes | Done: **HUD shape** (launcher) sets the area the HUD and menus are drawn in |
+| 3D: side by side, LeiaSR displays | Done: played on a Samsung Odyssey 3D, side by side and woven (`host_shaders/stereo.comp`, `gpu/leiasr_bridge`). Not in HDR |
 | HDR | Done; the darker picture when RCAS runs is fixed, waiting for a test (#4) |
 | Sound: music and effects (Audio3d) | Done; the effects are new, please report anything that sounds wrong |
 | Launcher and settings | Done (`launcher/gow3_launcher_win.py`) |
@@ -98,6 +127,16 @@ game's). One `eboot.bin` runs all three games: WipEout 2048, WipEout HD and WipE
    bash build.sh
    ```
 
+   Optional, for the **LeiaSR display** 3D output: build `gow3_leiasr.dll` with Visual Studio
+   2022 (or its Build Tools, C++ workload) and the LeiaSR SDK, which is not in this repository
+   (Leia provides it to developers). `packaging/windows/package.sh` adds it to the package when
+   it was built; without it, 3D is side by side only.
+
+   ```powershell
+   cmake -S gpu/leiasr_bridge -B out/leiasr-bridge -G "Visual Studio 17 2022" -A x64 -DLEIASR_SDK_ROOT=C:\path\to\LeiaSDK
+   cmake --build out/leiasr-bridge --config Release
+   ```
+
    If Git converts line endings on your PC (`core.autocrlf=true`), the FSR patches do not
    apply. Turn it off for this repository and its submodules before building:
 
@@ -133,7 +172,8 @@ python launcher\gow3_launcher_win.py
 ```
 
 The **Advanced** page can put a shortcut on the desktop. Settings: display mode, frame rate
-limit, VSync, anisotropic filtering, HDR, controls, mods and the game language.
+limit, VSync, aspect ratio and render resolution, HUD shape, 3D, anisotropic filtering, HDR,
+controls, mods and the game language.
 
 Without the launcher, `run.py` starts the game:
 
@@ -168,6 +208,9 @@ function the runtime does not implement and prints its name.
 | Red zones | `src/redzone.cpp`, `scripts/function_starts.py` | Keeps Windows exception records out of the game's red zones |
 | Launcher | `launcher/` | Settings window and game start |
 | GPU | `gpu/shadps4/` | shadPS4 video core (Vulkan) |
+| Resolution patches | `patches/WipEout_Omega_Collection.xml`, `tools/make_wipeout_resolution_patch.py` | Output size, half-resolution buffers, camera aspect ratio, field of view and culling for each size |
+| 3D | `renderer_vulkan/vk_stereo_depth.cpp`, `host_passes/stereo_pass.cpp`, `host_shaders/stereo.comp` | Copies the scene depth and the picture before the HUD, then builds both eyes from the depth |
+| LeiaSR | `renderer_vulkan/vk_leiasr.cpp`, `gpu/leiasr_bridge/` | Shares the pair with Direct3D 11 (`VK_KHR_external_memory_win32`) and weaves it with the LeiaSR SDK |
 
 Many names (`gow3-probe.exe`, `GOW3_*` variables, the launcher) still come from the God of
 War III port this project is based on. They will be renamed.
@@ -194,12 +237,16 @@ Contributors to this port: **d4g** (render resolution patches, the Metro Park te
 fix), **ahmanwoods** (Audio3d IDs), **alhockly** (EU version test), **benhaslett** (game clock
 measurements, Linux build fix) and **iannitram** (PS4 FPU state).
 
+This fork: **darkphoenixfox** (more aspect ratios and 4K, HUD shape, 3D side by side and LeiaSR
+output).
+
 Also used: [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9), [FFmpeg](https://ffmpeg.org),
 [SDL3](https://github.com/libsdl-org/SDL), [Dear ImGui](https://github.com/ocornut/imgui),
 [sirit](https://github.com/shadps4-emu/sirit), [magic_enum](https://github.com/Neargye/magic_enum),
 [miniz](https://github.com/richgel999/miniz), [xbyak](https://github.com/herumi/xbyak),
 [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator),
-[FSR-Vulkan](https://github.com/FireBurn/FSR-Vulkan) and the AMD FidelityFX SDK,
+[FSR-Vulkan](https://github.com/FireBurn/FSR-Vulkan) and the AMD FidelityFX SDK, the LeiaSR SDK
+(Leia, Inc., MIT; for the optional LeiaSR bridge),
 [MSYS2](https://www.msys2.org), [LLVM](https://llvm.org) and [Pillow](https://python-pillow.org).
 
 ## License
