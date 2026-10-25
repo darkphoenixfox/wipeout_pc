@@ -1414,10 +1414,32 @@ EXTRA['es'].update({
 EXTRA['pt'].update({
     'Aspect ratio': 'Proporção da tela',
     'Shows the render resolutions of this shape only.': 'Mostra só as resoluções de render desta proporção.',
+    'HUD shape': 'Formato do HUD',
+    '16:9 (game)': '16:9 (jogo)',
+    'Full screen (stretched)': 'Tela inteira (esticado)',
+    'The shape of the area the HUD and menus are drawn in, centered on the screen. The game lays them out '
+    'for 16:9: another shape stretches or squeezes them to fit.':
+        'O formato da área onde o HUD e os menus são desenhados, centralizada na tela. O jogo os organiza '
+        'para 16:9: outro formato os estica ou comprime para caber.',
+    'The size the game draws at; higher is sharper and slower. Wider than 16:9 shows more at the sides, '
+    '4:3 more at the top and bottom. Use a window or screen of the same shape.':
+        'O tamanho em que o jogo desenha; maior é mais nítido e mais lento. Mais largo que 16:9 mostra mais '
+        'dos lados, 4:3 mais em cima e embaixo. Use uma janela ou tela do mesmo formato.',
 })
 EXTRA['es'].update({
     'Aspect ratio': 'Relación de aspecto',
     'Shows the render resolutions of this shape only.': 'Muestra solo las resoluciones de render de esta proporción.',
+    'HUD shape': 'Forma del HUD',
+    '16:9 (game)': '16:9 (juego)',
+    'Full screen (stretched)': 'Pantalla completa (estirado)',
+    'The shape of the area the HUD and menus are drawn in, centered on the screen. The game lays them out '
+    'for 16:9: another shape stretches or squeezes them to fit.':
+        'La forma del área donde se dibujan el HUD y los menús, centrada en la pantalla. El juego los dispone '
+        'para 16:9: otra forma los estira o comprime para que quepan.',
+    'The size the game draws at; higher is sharper and slower. Wider than 16:9 shows more at the sides, '
+    '4:3 more at the top and bottom. Use a window or screen of the same shape.':
+        'El tamaño al que dibuja el juego; más alto es más nítido y más lento. Más ancho que 16:9 muestra más '
+        'a los lados, 4:3 más arriba y abajo. Usa una ventana o pantalla de la misma forma.',
 })
 
 _tables = {}

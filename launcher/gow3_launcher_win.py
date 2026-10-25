@@ -393,7 +393,7 @@ INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1',
                 'object_motion': '1', 'show_fps': '1', 'output_res': '1920x1080',
                 'live_resolution': 'auto', 'display_mode': 'windowed', 'vsync': '1', 'fps_limit': '0',
                 'async_shaders': '1', 'deferred_readback': '1', 'stale_readback': '1',
-                'render_resolution': 'native', 'engine_fps': '120',
+                'render_resolution': 'native', 'engine_fps': '120', 'hud_aspect': '16:9',
                 'frames_queued': '1', 'cheat_very_hard': '0', 'cheat_double_jumps': '0',
                 'anisotropy': '0', 'vibration': '100', 'mouse_prompt_distance': '48', 'mouse_lock': '1',
                 'mouse_aim_style': '0', 'mouse_aim_sensitivity': '100'}
@@ -1152,6 +1152,8 @@ def pad_labels(style):
 
 
 RESOLUTION_CHOICES = [(name, (graphics_options.resolution_label(name),)) for name in graphics_options.RESOLUTIONS]
+HUD_ASPECT_CHOICES = [('16:9', ('16:9 (game)',)), ('4:3', ('4:3',)), ('16:10', ('16:10',)), ('21:9', ('21:9',)),
+                      ('32:9', ('32:9',)), ('fill', ('Full screen (stretched)', 'Весь экран (растянут)'))]
 ENGINE_FPS_CHOICES = [('60', ('60 (original)',)), ('100', ('100',)), ('120', ('120',)), ('240', ('240',))]
 
 
@@ -1440,8 +1442,13 @@ class Launcher:
                 if size not in graphics_options.RESOLUTIONS]
 
     def resolution_options(self):
-        """The render resolutions to choose from: the built-in ones and those of the enabled mods."""
-        return RESOLUTION_CHOICES + self.mod_resolutions()
+        """The render resolutions to choose from: the built-in ones the game has a resolution patch for
+        (its profile's GOW3_ALLOWED_RESOLUTIONS, as the in-game menu) and those of the enabled mods."""
+        import game_profiles
+        title_id = game_profile_of(self.meta_dir())[0]
+        allowed = game_profiles.PROFILES.get(title_id or '', {}).get('env', {}).get('GOW3_ALLOWED_RESOLUTIONS')
+        keep = set(allowed.split(';')) if allowed else None
+        return [c for c in RESOLUTION_CHOICES if keep is None or c[0] in keep] + self.mod_resolutions()
 
     def aspect_var(self):
         """The Aspect ratio filter (Home and Performance): not saved, it follows the render resolution;
@@ -1649,15 +1656,19 @@ class Launcher:
         ttk.Label(quick, text=_('Quick settings', 'Основное').upper(), style='Section.TLabel').grid(
             row=0, column=0, columnspan=4, sticky='w')
         tk.Frame(quick, bg=LINE, height=self.px(1)).grid(row=1, column=0, columnspan=4, sticky='we', pady=self.px((2, 6)))
-        # WipEout renders 1080p at 60 FPS: no engine frame rate or render resolution patches.
+        # Left: display, frame rate and HUD shape; right: Aspect ratio above the Render resolution it filters.
         items = ((0, 0, _('Display mode'), 'display_mode', DISPLAY_MODES),
                  (1, 0, _('Frame rate limit'), 'fps_limit', FPS_LIMITS),
-                 (0, 2, _('Frames queued'), 'frames_queued', FRAMES_QUEUED),
-                 (1, 2, _('Anisotropic filtering'), 'anisotropy', ANISOTROPY))
+                 (2, 0, _('HUD shape'), 'hud_aspect', HUD_ASPECT_CHOICES),
+                 (0, 2, _('Aspect ratio'), None, self.aspect_options),
+                 (1, 2, _('Render resolution'), 'render_resolution', self.aspect_resolution_options),
+                 (2, 2, _('Frames queued'), 'frames_queued', FRAMES_QUEUED))
         for row, c, title, key, options in items:
             r = 2 + row
             ttk.Label(quick, text=title).grid(row=r, column=c, sticky='w', pady=self.px(6), padx=self.px((0, 12)))
-            self.choice(quick, key, 'ini', options, width=18).grid(row=r, column=c + 1, sticky='w', padx=self.px((0, 40)))
+            box = (self.choice(quick, key, 'ini', options, width=18) if key else
+                   self.choice(quick, None, None, options, width=18, var=self.aspect_var()))
+            box.grid(row=r, column=c + 1, sticky='w', padx=self.px((0, 40)))
 
     def draw_banner(self):
         """The cover art of the selected dump (sce_sys/pic0.png, else pic1.png) under the title."""
@@ -1743,6 +1754,15 @@ class Launcher:
         self.check(f, 'hdr', 'app', _('Allow HDR output', 'Разрешить HDR'),
                    _('When HDR is on in Windows and the display supports it.',
                      'Если HDR включён в Windows и монитор его поддерживает.'))
+        self.section(f, _('Resolution', 'Разрешение'))
+        self.row(f, _('Aspect ratio'), self.choice(f, None, None, self.aspect_options, var=self.aspect_var()),
+                 _('Shows the render resolutions of this shape only.'))
+        self.row(f, _('Render resolution'), self.choice(f, 'render_resolution', 'ini', self.aspect_resolution_options),
+                 _('The size the game draws at; higher is sharper and slower. Wider than 16:9 shows more at the '
+                   'sides, 4:3 more at the top and bottom. Use a window or screen of the same shape.'), restart=True)
+        self.row(f, _('HUD shape'), self.choice(f, 'hud_aspect', 'ini', HUD_ASPECT_CHOICES),
+                 _('The shape of the area the HUD and menus are drawn in, centered on the screen. The game lays '
+                   'them out for 16:9: another shape stretches or squeezes them to fit.'), restart=True)
         self.section(f, _('Textures'))
         self.row(f, _('Anisotropic filtering'), self.choice(f, 'anisotropy', 'ini', ANISOTROPY),
                  _('Sharper floors and walls seen at an angle, at little cost on most graphics cards.'),

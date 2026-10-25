@@ -51,6 +51,7 @@ Thanks to everyone who has played, tested and reported so far!
 | Frame rate above 60 FPS | Done: up to 240 FPS, set by the frame rate limit (110–150 FPS in 2048 races on an RTX 4070 Laptop) |
 | Graphics: Metro Park terrain | Fixed (shader recompiler, #5) |
 | Render resolutions: native 1080p, 2560x1440, 2560x1080, 3440x1440, 5120x2160 | Done: pick one in the in-game **Render resolution** menu (Insert key) (`patches/WipEout_Omega_Collection.xml`, #2). The HUD stays 16:9 in the middle of wider screens. 5120x2160 needs more than 8 GB of video memory |
+| More aspect ratios: 3840x1600 (21:9), 5120x1440 (32:9), 1440x1080, 1920x1440, 2048x1536, 2560x1920 (4:3) | Not tested in game yet. 21:9 and 32:9 widen the view (32:9 also widens the side culling); 4:3 keeps the 16:9 horizontal view and shows more at the top and bottom, with the HUD 16:9 across the width. Choose in the launcher (Home or Graphics: Aspect ratio, Render resolution) or in the game. **HUD shape** (launcher) draws the HUD and menus in 16:9, 4:3, 16:10, 21:9, 32:9 or over the whole screen. New sizes: `tools/make_wipeout_resolution_patch.py` |
 | HDR | Done; the darker picture when RCAS runs is fixed, waiting for a test (#4) |
 | Sound: music and effects (Audio3d) | Done; the effects are new, please report anything that sounds wrong |
 | Launcher and settings | Done (`launcher/gow3_launcher_win.py`) |

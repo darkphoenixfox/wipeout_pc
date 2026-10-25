@@ -24,8 +24,11 @@ SIZES = {'native': (1920, 1080), '480p': (854, 480), '720p': (1280, 720), '900p'
          '1440p': (2560, 1440), '1800p': (3200, 1800), '4K': (3840, 2160)}
 ASPECTS = (('16:9', 16 / 9), ('16:10', 16 / 10), ('21:9', 2.37), ('32:9', 32 / 9), ('4:3', 4 / 3))
 ENGINE_FPS = (60, 100, 120, 240)
+# The shape of the area WipEout's HUD and menus are drawn in (GOW3_HUD_ASPECT, width/height), centered
+# on the screen; 'fill' stretches them over the whole screen. The game lays them out for 16:9.
+HUD_ASPECTS = {'16:9': 16 / 9, '4:3': 4 / 3, '16:10': 16 / 10, '21:9': 64 / 27, '32:9': 32 / 9, 'fill': 0}
 DEFAULTS = {'render_resolution': 'native', 'engine_fps': '120', 'deferred_readback': '1',
-            'stale_readback': '1', 'async_shaders': '1'}
+            'stale_readback': '1', 'async_shaders': '1', 'hud_aspect': '16:9'}
 RESOLUTION_PREFIX = 'Resolution Patch'
 FPS_PREFIX = 'Frame Rate Patch'
 TEXTURE_FIX = 'Bug Fix - Texture Corruption Fix'
@@ -140,6 +143,8 @@ def startup_options(ini, extra=()):
         options['engine_fps'] = '120'
     for key in ('deferred_readback', 'stale_readback', 'async_shaders'):
         options[key] = '0' if options[key] == '0' else '1'
+    if options['hud_aspect'] not in HUD_ASPECTS:
+        options['hud_aspect'] = DEFAULTS['hud_aspect']
     return options
 
 
@@ -208,4 +213,5 @@ def applied_engine_fps(names):
 def environment(options):
     return {'GOW3_DEFERRED_READBACK': options['deferred_readback'],
             'GOW3_STALE_READBACK': options['stale_readback'],
-            'GOW3_ASYNC_SHADERS': options['async_shaders']}
+            'GOW3_ASYNC_SHADERS': options['async_shaders'],
+            'GOW3_HUD_ASPECT': f"{HUD_ASPECTS[options['hud_aspect']]:.6f}"}

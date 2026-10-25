@@ -1,4 +1,5 @@
 from paths import ROOT
+import math
 import os
 import struct
 import tempfile
@@ -6,6 +7,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import game_profiles
 from patches import (compile_patches, external_patches, external_selection, compile_external,
                      game_profile, selected_patches, patch_requirements, GAMES, merge_patch_files,
                      resolution_names, default_enabled)
@@ -419,7 +421,14 @@ class HalfResolutionTests(unittest.TestCase):
         names = [m.get('Name') for m in ET.parse(WIPEOUT).getroot().iter('Metadata')]
         self.assertEqual(names, ['Resolution Patch - 2560x1080', 'Resolution Patch - 5120x2160',
                                  'Resolution Patch - 1440p', 'Resolution Patch - 3440x1440',
+                                 'Resolution Patch - 3840x1600', 'Resolution Patch - 5120x1440',
+                                 'Resolution Patch - 1440x1080', 'Resolution Patch - 1920x1440',
+                                 'Resolution Patch - 2048x1536', 'Resolution Patch - 2560x1920',
                                  'Native 4K rendering (no checkerboard)'])
+        # Every resolution patch is one the in-game menu shows (GOW3_ALLOWED_RESOLUTIONS).
+        allowed = game_profiles.PROFILES['CUSA07671']['env']['GOW3_ALLOWED_RESOLUTIONS'].split(';')
+        self.assertEqual(sorted(n.split(' - ')[1] for n in names if n.startswith('Resolution Patch')),
+                         sorted(a for a in allowed if a != 'native'))
         # The resolution patches stay off until a resolution is chosen; native 4K rendering is on.
         self.assertEqual(selected_patches(WIPEOUT, '01.00', ''), ['Native 4K rendering (no checkerboard)'])
         self.assertTrue(compile_patches(WIPEOUT, names[1:], '01.00', SEGMENTS))
@@ -447,6 +456,18 @@ class HalfResolutionTests(unittest.TestCase):
             for address in cameras:
                 aspect = struct.unpack('<f', bytes.fromhex(lines[address]))[0]
                 self.assertAlmostEqual(aspect, width / height, places=5, msg=meta.get('Name'))
+            # pi/360 of both pools: scaled together, only taller than 16:9 (Vert+), the 16:9 horizontal view at 65 degrees.
+            fovs = [a for a in ('0x00c60d0c', '0x00c60d4c') if a in lines]
+            self.assertEqual(len(fovs), 2 if width * 9 < height * 16 else 0, meta.get('Name'))
+            for address in fovs:
+                half = struct.unpack('<f', bytes.fromhex(lines[address]))[0] * 65
+                self.assertAlmostEqual(math.tan(half) * width / height, math.tan(math.radians(32.5)) * 16 / 9,
+                                       places=4, msg=meta.get('Name'))
+            # The horizontal culling angle covers the view: raised only where the 16/9 one would not.
+            cull = struct.unpack('<f', bytes.fromhex(lines.get('0x00c60d28', '972e7e3c')))[0] * 65
+            view = math.atan(math.tan(math.radians(32.5)) * max(width / height, 16 / 9))
+            self.assertGreater(cull, view, meta.get('Name'))
+            self.assertEqual('0x00c60d28' in lines, width / height > 2.45, meta.get('Name'))
 
 if __name__ == '__main__':
     unittest.main()
