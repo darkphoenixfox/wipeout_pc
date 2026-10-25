@@ -61,10 +61,18 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 NEW_GROUP = {} if WINDOWS else {'start_new_session': True}
 UI_FONT, MONO_FONT, SERIF_FONT = 'Segoe UI', 'Consolas', 'Georgia'
 # This build; GitHub release tags are windows-v<VERSION>.
-VERSION = '0.3.0'
+VERSION = '0.2.7'
 RELEASES_API = 'https://api.github.com/repos/AbdelmoumenDeghbouche/wipeout_pc/releases/latest'
 RELEASES_PAGE = 'https://github.com/AbdelmoumenDeghbouche/wipeout_pc/releases/latest'
 UPDATE_DIR = Path(tempfile.gettempdir()) / 'gow3-update'
+
+# A fork's own version and releases (launcher/fork_info.py, a file upstream does not have): what
+# the launcher shows and where its update check looks. Without it, upstream's above.
+APP_VERSION = VERSION
+try:
+    from fork_info import APP_VERSION, RELEASES_API, RELEASES_PAGE  # noqa: E402,F811
+except ImportError:
+    pass
 # Never copied over an installation by an update (the package does not hold them either).
 USER_FILES = ('user', 'out', 'mods', 'gow3.ini', 'mods.json', 'mods_presets.json', 'patches.json', 'last_run.log')
 # The title face (Cinzel Black), next to gow3.ico; main() registers it for this process only.
@@ -672,13 +680,34 @@ OUTPUTS = [('1280x720', ('1280 × 720 (Steam Deck)',)), ('1920x1080', ('1920 × 
            ('2560x1440', ('2560 × 1440',)), ('3840x2160', ('3840 × 2160 (4K)',))]
 LIVE = [('auto', ('Auto (by graphics card)', 'Авто (по видеокарте)')), ('0', ('Off (faster)', 'Выключена (быстрее)')),
         ('1', ('On (change without restarting)', 'Включена (без перезапуска)'))]
-LANGUAGES = [('1', ('English', 'Английский')), ('8', ('Russian', 'Русский')), ('0', ('Japanese', 'Японский')),
-             ('2', ('French', 'Французский')), ('3', ('Spanish', 'Испанский')), ('4', ('German', 'Немецкий')),
-             ('5', ('Italian', 'Итальянский'))]
+# (PS4 system language ID, name, regions): the game's own table (eboot.bin 0x9B89A0) only takes a
+# language its region has, from USER_DEFINED_PARAM_1 of param.sfo: 1 Europe (CUSA05670),
+# 2 Americas (CUSA07671), 4 Japan, 8 Asia, 16 China. Any other ID gets the region's default.
+LANGUAGES = [('18', ('English', 'Английский'), 1 | 4 | 8), ('1', ('English', 'Английский'), 2),
+             ('2', ('French', 'Французский'), 1), ('22', ('French', 'Французский'), 2),
+             ('3', ('Spanish', 'Испанский'), 1), ('20', ('Spanish', 'Испанский'), 2),
+             ('4', ('German', 'Немецкий'), 1), ('5', ('Italian', 'Итальянский'), 1), ('6', ('Dutch',), 1),
+             ('7', ('Portuguese',), 1), ('17', ('Portuguese',), 2), ('8', ('Russian', 'Русский'), 1),
+             ('12', ('Finnish',), 1), ('13', ('Swedish',), 1), ('14', ('Danish',), 1),
+             ('15', ('Norwegian',), 1), ('16', ('Polish',), 1), ('19', ('Turkish',), 1),
+             ('0', ('Japanese', 'Японский'), 4), ('9', ('Korean',), 8), ('10', ('Chinese (Traditional)',), 8),
+             ('11', ('Chinese (Simplified)',), 16)]
+
+
+def game_languages(folder):
+    """The (ID, name) pairs the game in `folder` can show; every name once without a game."""
+    region = game_sfo(folder).get('USER_DEFINED_PARAM_1') if folder else None
+    region = region if isinstance(region, int) and region else 0xff
+    pairs = {}
+    for value, text, regions in LANGUAGES:
+        if regions & region:
+            pairs.setdefault(text, value)
+    return [(value, text) for text, value in pairs.items()]
 DRAW_PIPE = [('', ('Auto (8+ threads)', 'Авто (8+ потоков)')), ('1', ('On', 'Включён')),
              ('0', ('Off (more stable)', 'Выключен (стабильнее)'))]
-READBACKS = [('', ('Relaxed (default)', 'Relaxed (по умолчанию)')), ('0', ('Off', 'Выключены')),
-             ('2', ('Precise',))]
+# GOW3_READBACKS=2 (Precise) is not offered: the copy and recording threads deadlock on its read
+# faults at boot (#37), and with them off the race draws black.
+READBACKS = [('', ('Relaxed (default)', 'Relaxed (по умолчанию)')), ('0', ('Off', 'Выключены'))]
 # GOW3_NO_MSAA: '' leaves the game's own default, off on AMD's and Intel's Windows drivers
 # (video_core/amdgpu/gow3_msaa_default.h); no_msaa_options names the chosen card in Automatic.
 NO_MSAA = [('', ('Automatic',)), ('1', ('Off (fixes black lines)',)), ('0', ('On',))]
@@ -1106,8 +1135,9 @@ def game_environment(s):
     env['GOW3_DISCORD'] = '1' if s.get('discord_rpc') else '0'
     if s['hdr']:
         env['GOW3_HDR'] = '1'
-    for key, name in (('draw_pipe', 'GOW3_DRAW_PIPE'), ('readbacks', 'GOW3_READBACKS'), ('no_msaa', 'GOW3_NO_MSAA')):
-        if s.get(key):
+    for key, name, options in (('draw_pipe', 'GOW3_DRAW_PIPE', DRAW_PIPE), ('readbacks', 'GOW3_READBACKS', READBACKS),
+                               ('no_msaa', 'GOW3_NO_MSAA', NO_MSAA)):
+        if s.get(key) and s[key] in dict(options):
             env[name] = s[key]
     # The saved UI choice wins over inherited diagnostic overrides, including when reverting.
     stream_memory = s.get('stream_memory', APP_DEFAULTS['stream_memory'])
@@ -1601,7 +1631,7 @@ class Launcher:
                                                'В игре: Insert или R3+L2\nоткрывает меню порта.'),
                                   bg=BG, fg=MUTED, font=self.font(UI_FONT, 9), justify='left', wraplength=self.px(210))
         self.side_note.pack(anchor='w', padx=self.px(22), pady=self.px((0, 4)))
-        tk.Label(side, text=f'v{VERSION}', bg=BG, fg=MUTED, font=self.font(UI_FONT, 9)).pack(anchor='w', padx=self.px(22), pady=self.px((0, 18)))
+        tk.Label(side, text=f'v{APP_VERSION}', bg=BG, fg=MUTED, font=self.font(UI_FONT, 9)).pack(anchor='w', padx=self.px(22), pady=self.px((0, 18)))
 
         right = tk.Frame(self.root, bg=PANEL)
         right.pack(side='left', fill='both', expand=True)
@@ -1874,7 +1904,8 @@ class Launcher:
         self.section(f, _('Saves'))
         self.build_save_backups(f)
         self.section(f, _('Language'))
-        self.row(f, _('Game language', 'Язык игры'), self.choice(f, 'language', 'app', LANGUAGES))
+        self.row(f, _('Game language', 'Язык игры'), self.choice(f, 'language', 'app',
+                                                                  lambda: game_languages(self.meta_dir())))
         self.build_patches(f)
 
     def user_dir(self):
@@ -2352,7 +2383,7 @@ class Launcher:
                        ).pack(side='left')
         ttk.Button(holder, text=_('Desktop shortcut', 'Ярлык на рабочем столе'), command=self.shortcut).pack(side='left', padx=self.px(6))
         ttk.Button(holder, text=_('Add to Steam'), command=self.add_to_steam).pack(side='left')
-        ttk.Label(holder, text=f'v{VERSION}', style='Muted.TLabel').pack(side='left', padx=self.px(10))
+        ttk.Label(holder, text=f'v{APP_VERSION}', style='Muted.TLabel').pack(side='left', padx=self.px(10))
         if not WINDOWS:
             self.build_linux_options(f)
         self.section(f, _('Files'))
@@ -2999,11 +3030,11 @@ class Launcher:
             return
 
         def show():
-            if version_tuple(version) > version_tuple(VERSION):
+            if version_tuple(version) > version_tuple(APP_VERSION):
                 self.offer_update(version, url, page)
             elif manual:
                 self.messagebox.showinfo(APP_NAME, _('You have the latest version ({}).',
-                                                         'У вас последняя версия ({}).').format(VERSION))
+                                                         'У вас последняя версия ({}).').format(APP_VERSION))
         self.ui_calls.put(show)
 
     def offer_update(self, version, url, page):
