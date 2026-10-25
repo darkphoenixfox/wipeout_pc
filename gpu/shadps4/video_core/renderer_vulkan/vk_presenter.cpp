@@ -319,9 +319,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
-    if (stereo_settings.enable) {
-        stereo_pass.Create(device, instance.GetAllocator(), num_images);
-    }
+    stereo_pass.Create(device, instance.GetAllocator(), num_images);
     Gow3Overlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
     const bool binary_cache = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARIES", true) &&
@@ -651,7 +649,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
-    // gow3: stereo 3D (GOW3_STEREO): the picture and its scene depth become a side-by-side pair.
+    // gow3: stereo 3D (in-game menu, GOW3_STEREO): the picture and its scene depth become a
+    // side-by-side pair.
+    const auto stereo_settings = HostPasses::StereoPass::Current();
     if (stereo_settings.enable && !upscaled) {
         const auto scene = rasterizer->GetStereoDepth().Find(cpu_address);
         static bool logged = false;

@@ -3,6 +3,7 @@
 
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
+#include "gow3_settings.h"
 #include "gow3_toggles.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "video_core/renderer_vulkan/vk_lighting_test.h"
@@ -285,12 +286,10 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         }
     }
 
-    // gow3: stereo 3D (GOW3_STEREO): the first draw into a new display buffer is the finished
-    // scene (as for the HUD above); the full-size depth written before it is the scene's.
-    static const bool stereo = [] {
-        const char* value = std::getenv("GOW3_STEREO");
-        return value && value[0] == '1';
-    }();
+    // gow3: stereo 3D (in-game menu, GOW3_STEREO): the first draw into a new display buffer is
+    // the finished scene (as for the HUD above); the full-size depth written before it is the
+    // scene's.
+    const bool stereo = Gow3Settings::Get().stereo;
     // The second draw into it starts the HUD: the picture is copied before it.
     if (stereo && cb_descs[0].first && regs.color_buffers[0].Address() == stereo_buffer &&
         ++stereo_draws == 2) {

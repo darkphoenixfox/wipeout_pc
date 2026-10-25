@@ -386,7 +386,8 @@ def heading_font(size, fallback=None, every_language=False):
 # Settings. gow3.ini keys (the game reads them, the in-game menu edits them) and the
 # launcher's own settings.json (passed to run.py as environment variables).
 
-INI_FLAGS = {'cheat_double_jumps', 'cheat_very_hard', 'object_motion', 'show_fps', 'vsync', 'async_shaders', 'deferred_readback',
+INI_FLAGS = {'stereo', 'stereo_swap',
+             'cheat_double_jumps', 'cheat_very_hard', 'object_motion', 'show_fps', 'vsync', 'async_shaders', 'deferred_readback',
              'stale_readback'}
 # The graphics keys are also in the in-game menu (Insert / R3+L2); run.py reads the startup ones.
 INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1',
@@ -394,6 +395,7 @@ INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1',
                 'live_resolution': 'auto', 'display_mode': 'windowed', 'vsync': '1', 'fps_limit': '0',
                 'async_shaders': '1', 'deferred_readback': '1', 'stale_readback': '1',
                 'render_resolution': 'native', 'engine_fps': '120', 'hud_aspect': '16:9',
+                'stereo': '0', 'stereo_depth': '30', 'stereo_focus': '20', 'stereo_popout': '20', 'stereo_swap': '0',
                 'frames_queued': '1', 'cheat_very_hard': '0', 'cheat_double_jumps': '0',
                 'anisotropy': '0', 'vibration': '100', 'mouse_prompt_distance': '48', 'mouse_lock': '1',
                 'mouse_aim_style': '0', 'mouse_aim_sensitivity': '100'}
@@ -1154,6 +1156,9 @@ def pad_labels(style):
 RESOLUTION_CHOICES = [(name, (graphics_options.resolution_label(name),)) for name in graphics_options.RESOLUTIONS]
 HUD_ASPECT_CHOICES = [('16:9', ('16:9 (game)',)), ('4:3', ('4:3',)), ('16:10', ('16:10',)), ('21:9', ('21:9',)),
                       ('32:9', ('32:9',)), ('fill', ('Full screen (stretched)', 'Весь экран (растянут)'))]
+# 3D side by side (gow3.ini stereo_*): the in-game menu has the same controls, as sliders.
+STEREO_LEVELS = [(str(n), (str(n),)) for n in range(0, 101, 5)]
+STEREO_FOCUS = [(str(n), (str(n),)) for n in [1] + list(range(5, 101, 5))]
 ENGINE_FPS_CHOICES = [('60', ('60 (original)',)), ('100', ('100',)), ('120', ('120',)), ('240', ('240',))]
 
 
@@ -1763,6 +1768,19 @@ class Launcher:
         self.row(f, _('HUD shape'), self.choice(f, 'hud_aspect', 'ini', HUD_ASPECT_CHOICES),
                  _('The shape of the area the HUD and menus are drawn in, centered on the screen. The game lays '
                    'them out for 16:9: another shape stretches or squeezes them to fit.'), restart=True)
+        self.section(f, _('3D', '3D'))
+        self.check(f, 'stereo', 'ini', _('3D side by side'),
+                   _('Left and right eye pictures side by side, made from the scene\'s depth, for 3D displays that '
+                     'take side-by-side input (turn on their side-by-side 3D mode). The HUD stays on the screen. '
+                     'The in-game menu (Insert > Image) changes all of these while you play.'))
+        self.row(f, _('3D depth'), self.choice(f, 'stereo_depth', 'ini', STEREO_LEVELS),
+                 _('How far the distance goes into the screen. 0 is flat.'))
+        self.row(f, _('3D focus'), self.choice(f, 'stereo_focus', 'ini', STEREO_FOCUS),
+                 _('What sits on the screen: higher brings the screen plane nearer, so more of the scene is '
+                   'behind it and less comes out.'))
+        self.row(f, _('3D pop-out'), self.choice(f, 'stereo_popout', 'ini', STEREO_LEVELS),
+                 _('The most that near objects (your ship) come out of the screen.'))
+        self.check(f, 'stereo_swap', 'ini', _('Swap eyes'), _('Right eye on the left: for cross-eyed viewing.'))
         self.section(f, _('Textures'))
         self.row(f, _('Anisotropic filtering'), self.choice(f, 'anisotropy', 'ini', ANISOTROPY),
                  _('Sharper floors and walls seen at an angle, at little cost on most graphics cards.'),

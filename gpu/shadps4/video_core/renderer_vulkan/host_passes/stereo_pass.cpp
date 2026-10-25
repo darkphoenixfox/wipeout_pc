@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "gow3_settings.h"
 #include "video_core/host_shaders/stereo_comp.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -22,11 +23,6 @@ struct PushConstants {
     u32 flags;
 };
 
-float EnvFloat(const char* name, float fallback) {
-    const char* value = std::getenv(name);
-    return value && value[0] ? std::strtof(value, nullptr) : fallback;
-}
-
 bool EnvFlag(const char* name) {
     const char* value = std::getenv(name);
     return value && value[0] == '1';
@@ -34,19 +30,24 @@ bool EnvFlag(const char* name) {
 
 } // namespace
 
-StereoPass::Settings StereoPass::FromEnvironment() {
-    Settings settings{};
-    settings.enable = EnvFlag("GOW3_STEREO");
-    settings.separation = EnvFloat("GOW3_STEREO_SEPARATION", settings.separation);
-    settings.convergence = EnvFloat("GOW3_STEREO_CONVERGENCE", settings.convergence);
-    settings.max_popout = EnvFloat("GOW3_STEREO_POPOUT", settings.max_popout);
-    settings.reversed = EnvFlag("GOW3_STEREO_REVERSED");
-    settings.show_depth = EnvFlag("GOW3_STEREO_SHOW_DEPTH");
-    if (settings.enable) {
-        std::printf("Stereo: side by side, separation %.4f, convergence %.4f, pop-out %.4f%s%s\n",
-                    settings.separation, settings.convergence, settings.max_popout,
-                    settings.reversed ? ", reversed depth" : "",
-                    settings.show_depth ? ", showing depth" : "");
+StereoPass::Settings StereoPass::Current() {
+    static const bool reversed = EnvFlag("GOW3_STEREO_REVERSED");
+    static const bool show_depth = EnvFlag("GOW3_STEREO_SHOW_DEPTH");
+    const auto& v = Gow3Settings::Get();
+    Settings settings{
+        .enable = v.stereo,
+        .separation = float(v.stereo_depth) * 0.001f,
+        .convergence = float(std::max(v.stereo_focus.load(), 1)) * 0.001f,
+        .max_popout = float(v.stereo_popout) * 0.001f,
+        .swap = v.stereo_swap,
+        .reversed = reversed,
+        .show_depth = show_depth,
+    };
+    static bool logged = false;
+    if (settings.enable && !logged) {
+        logged = true;
+        std::printf("Stereo: side by side, separation %.3f, convergence %.3f, pop-out %.3f\n",
+                    settings.separation, settings.convergence, settings.max_popout);
     }
     return settings;
 }
@@ -146,6 +147,7 @@ vk::ImageView StereoPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
     flags |= settings.reversed ? 1u : 0u;
     flags |= settings.show_depth ? 4u : 0u;
     flags |= depth.scene ? 8u : 0u;
+    flags |= settings.swap ? 16u : 0u;
     const PushConstants push{
         .out_size = {float(input_size.width), float(input_size.height)},
         .depth_size = {float(std::min(input_size.width, depth.size.width ? depth.size.width : 1u)),

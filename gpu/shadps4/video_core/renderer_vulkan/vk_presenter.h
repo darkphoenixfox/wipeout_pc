@@ -123,7 +123,6 @@ private:
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;
     HostPasses::StereoPass stereo_pass;
-    HostPasses::StereoPass::Settings stereo_settings = HostPasses::StereoPass::FromEnvironment();
     AmdGpu::Liverpool* liverpool;
     Scheduler draw_scheduler;
     std::deque<u64> recent_frame_ticks; ///< gow3: GOW3_FRAMES_AHEAD bound (PrepareFrame)

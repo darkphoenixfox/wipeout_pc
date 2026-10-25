@@ -19,12 +19,13 @@ public:
         float separation = 0.03f;  ///< parallax at infinity, fraction of one eye's width
         float convergence = 0.02f; ///< nearness (1 - depth) of the screen plane
         float max_popout = 0.02f;  ///< largest parallax in front of the screen
-        bool reversed = false;     ///< depth 1 is near
-        bool show_depth = false;   ///< debug: nearness as grey
+        bool swap = false;         ///< right eye on the left
+        bool reversed = false;     ///< depth 1 is near (GOW3_STEREO_REVERSED)
+        bool show_depth = false;   ///< debug: nearness as grey (GOW3_STEREO_SHOW_DEPTH)
     };
-    /// The settings from GOW3_STEREO, GOW3_STEREO_SEPARATION, _CONVERGENCE, _POPOUT, _REVERSED
-    /// and _SHOW_DEPTH, read once.
-    static Settings FromEnvironment();
+    /// This frame's settings: the in-game menu's (Gow3Settings), the debug ones from the
+    /// environment.
+    static Settings Current();
 
     struct Depth {
         vk::ImageView view{}; ///< R32F scene depth, ShaderReadOnlyOptimal; null: none (eyes alike)

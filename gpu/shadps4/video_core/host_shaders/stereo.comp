@@ -26,7 +26,7 @@ layout(push_constant) uniform Constants {
     float convergence;  // nearness on the screen plane
     float max_popout;   // largest parallax in front of the screen, fraction of the width
     uint flags;         // 1 reversed depth, 2 depth present, 4 show nearness (debug),
-                        // 8 scene picture without the HUD present
+                        // 8 scene picture without the HUD present, 16 swap eyes
 };
 
 float nearness(vec2 uv) {
@@ -45,8 +45,9 @@ void main() {
         return;
     }
     const float eye_width = out_size.x * 0.5;
-    const bool right = float(pixel.x) >= eye_width;
-    const vec2 uv = vec2((float(pixel.x) - (right ? eye_width : 0.0) + 0.5) / eye_width,
+    const bool right = (float(pixel.x) >= eye_width) != ((flags & 16u) != 0u);
+    const bool right_half = float(pixel.x) >= eye_width;
+    const vec2 uv = vec2((float(pixel.x) - (right_half ? eye_width : 0.0) + 0.5) / eye_width,
                          (float(pixel.y) + 0.5) / out_size.y);
     const bool has_depth = (flags & 2u) != 0u;
     if (has_depth && (flags & 4u) != 0u) {

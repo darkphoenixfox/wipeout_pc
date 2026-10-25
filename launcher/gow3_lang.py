@@ -1417,6 +1417,27 @@ EXTRA['pt'].update({
     'HUD shape': 'Formato do HUD',
     '16:9 (game)': '16:9 (jogo)',
     'Full screen (stretched)': 'Tela inteira (esticado)',
+    '3D': '3D',
+    '3D side by side':
+        '3D lado a lado',
+    "Left and right eye pictures side by side, made from the scene's depth, for 3D displays that take side-by-side input (turn on their side-by-side 3D mode). The HUD stays on the screen. The in-game menu (Insert > Image) changes all of these while you play.":
+        'Imagens do olho esquerdo e direito lado a lado, feitas da profundidade da cena, para telas 3D que aceitam entrada lado a lado (ligue o modo 3D lado a lado delas). O HUD fica na tela. O menu do jogo (Insert > Image) muda tudo isso enquanto você joga.',
+    '3D depth':
+        'Profundidade 3D',
+    'How far the distance goes into the screen. 0 is flat.':
+        'O quanto o fundo entra na tela. 0 é plano.',
+    '3D focus':
+        'Foco 3D',
+    'What sits on the screen: higher brings the screen plane nearer, so more of the scene is behind it and less comes out.':
+        'O que fica no plano da tela: mais alto aproxima esse plano, então mais da cena fica atrás dele e menos sai da tela.',
+    '3D pop-out':
+        'Saída da tela 3D',
+    'The most that near objects (your ship) come out of the screen.':
+        'O máximo que objetos próximos (sua nave) saem da tela.',
+    'Swap eyes':
+        'Trocar olhos',
+    'Right eye on the left: for cross-eyed viewing.':
+        'Olho direito à esquerda: para visão cruzada.',
     'The shape of the area the HUD and menus are drawn in, centered on the screen. The game lays them out '
     'for 16:9: another shape stretches or squeezes them to fit.':
         'O formato da área onde o HUD e os menus são desenhados, centralizada na tela. O jogo os organiza '
@@ -1432,6 +1453,27 @@ EXTRA['es'].update({
     'HUD shape': 'Forma del HUD',
     '16:9 (game)': '16:9 (juego)',
     'Full screen (stretched)': 'Pantalla completa (estirado)',
+    '3D': '3D',
+    '3D side by side':
+        '3D lado a lado',
+    "Left and right eye pictures side by side, made from the scene's depth, for 3D displays that take side-by-side input (turn on their side-by-side 3D mode). The HUD stays on the screen. The in-game menu (Insert > Image) changes all of these while you play.":
+        'Imágenes del ojo izquierdo y derecho lado a lado, hechas con la profundidad de la escena, para pantallas 3D que aceptan entrada lado a lado (activa su modo 3D lado a lado). El HUD queda en la pantalla. El menú del juego (Insert > Image) cambia todo esto mientras juegas.',
+    '3D depth':
+        'Profundidad 3D',
+    'How far the distance goes into the screen. 0 is flat.':
+        'Cuánto entra el fondo en la pantalla. 0 es plano.',
+    '3D focus':
+        'Enfoque 3D',
+    'What sits on the screen: higher brings the screen plane nearer, so more of the scene is behind it and less comes out.':
+        'Lo que queda en el plano de la pantalla: más alto acerca ese plano, así más escena queda detrás y menos sale de la pantalla.',
+    '3D pop-out':
+        'Salida de pantalla 3D',
+    'The most that near objects (your ship) come out of the screen.':
+        'Lo máximo que los objetos cercanos (tu nave) salen de la pantalla.',
+    'Swap eyes':
+        'Intercambiar ojos',
+    'Right eye on the left: for cross-eyed viewing.':
+        'Ojo derecho a la izquierda: para visión cruzada.',
     'The shape of the area the HUD and menus are drawn in, centered on the screen. The game lays them out '
     'for 16:9: another shape stretches or squeezes them to fit.':
         'La forma del área donde se dibujan el HUD y los menús, centrada en la pantalla. El juego los dispone '
