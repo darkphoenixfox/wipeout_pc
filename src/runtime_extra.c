@@ -273,7 +273,10 @@ static ABI int32_t random_number(void *buffer, uint64_t size) {
     }
     return 0;
 }
-/* ---- PlayStation VR headset: the library works, no headset is detected (as shadPS4) ---- */
+/* ---- PlayStation VR headset: the library works, no headset is detected (as shadPS4) ----
+ * GOW3_FAKE_PSVR=1 (stereo 3D research): a headset that is on and ready for the initial user, a
+ * 1920x1080 panel and the PSVR's field of view, so the game takes its VR path. The camera reports
+ * attached too: WipEout's headset check (0x7fc750) wants both. */
 #define HMD_NOT_INITIALIZED ((int32_t)0x81110002)
 #define HMD_HANDLE_INVALID ((int32_t)0x81110003)
 #define HMD_ALREADY_OPENED ((int32_t)0x81110006)
@@ -281,6 +284,11 @@ static ABI int32_t random_number(void *buffer, uint64_t size) {
 #define HMD_HANDLE 0xf000000 /* positive, distinct from other VrTracker devices */
 static int hmd_initialized;
 static int32_t hmd_handle, hmd_user=-1;
+static int fake_psvr(void) {
+    static int on=-1;
+    if (on<0) { const char *v=getenv("GOW3_FAKE_PSVR"); on=v && *v=='1'; if (on) puts("Runtime: reporting a PlayStation VR headset (GOW3_FAKE_PSVR)"); }
+    return on;
+}
 static ABI int32_t hmd_initialize(const void *param) {
     if (!param) return HMD_PARAMETER_NULL;
     hmd_initialized=1;
@@ -304,16 +312,65 @@ static ABI int32_t hmd_close(int32_t handle) {
     hmd_handle=0; hmd_user=-1;
     return 0;
 }
-/* OrbisHmdDeviceInformation (32 bytes): status NOT_DETECTED (2), user id. */
+/* OrbisHmdDeviceInformation (32 bytes): status NOT_DETECTED (2), user id. A fake headset: READY (0),
+ * the initial user (1), panel 1920x1080 at +12, flip-to-display latency at +20 (90/120 Hz, us). */
+static void hmd_fill_info(uint32_t *info) {
+    memset(info,0,32);
+    if (!fake_psvr()) { info[0]=2; info[1]=(uint32_t)hmd_user; return; }
+    info[0]=0; info[1]=1;
+    info[3]=1920; info[4]=1080; info[5]=18000; info[6]=18000;
+}
 static ABI int32_t hmd_device_info(uint32_t *info) {
     if (!info) return HMD_PARAMETER_NULL;
     if (!hmd_initialized) return HMD_NOT_INITIALIZED;
-    memset(info,0,32);
-    info[0]=2; info[1]=(uint32_t)hmd_user;
+    hmd_fill_info(info);
+    return 0;
+}
+/* ---- VR tracker (GOW3_FAKE_PSVR): the headset is tracked, still, at the origin ----
+ * QueryMemory's result (WipEout 0x658bcf): three (size, alignment) u32 pairs from +4, allocated by the
+ * game. GetResult (0x656362) reads a status at +0x34 (0 lost, 1 position and orientation, 2
+ * orientation only) and four poses 64 bytes apart from +0x80: position (x, y, z) then an (x, y, z, w)
+ * orientation at +0x10. */
+static ABI int32_t vr_query_memory(const void *param, uint32_t *result) {
+    (void)param;
+    if (!result) return HMD_PARAMETER_NULL;
+    for (int i=0;i<3;++i) { result[1+2*i]=0x10000; result[2+2*i]=0x1000; }
+    return 0;
+}
+static ABI int32_t vr_get_result(const void *param, unsigned char *result) {
+    (void)param;
+    if (!result) return HMD_PARAMETER_NULL;
+    *(int32_t *)(result+0x34)=1;
+    for (int i=0;i<4;++i) {
+        float *pose=(float *)(result+0x80+0x40*i);
+        pose[0]=pose[1]=pose[2]=0.0f;
+        pose[4]=pose[5]=pose[6]=0.0f; pose[7]=1.0f;
+    }
+    return 0;
+}
+/* Reprojection (GOW3_FAKE_PSVR): logged; the eye buffers are what a stereo output would show. */
+static ABI int32_t hmd_reprojection_log(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+    static int logged;
+    if (fake_psvr() && logged++<20)
+        printf("FakePSVR: reprojection call (0x%llx, 0x%llx, 0x%llx, 0x%llx)\n",
+               (unsigned long long)a,(unsigned long long)b,(unsigned long long)c,(unsigned long long)d);
     return 0;
 }
 /* SDK 4.50+ libraries report a missing headset as an invalid handle. */
-static ABI int32_t hmd_by_handle(void) { return HMD_HANDLE_INVALID; }
+static ABI int32_t hmd_info_by_handle(int32_t handle, uint32_t *info) {
+    if (!fake_psvr() || handle!=hmd_handle || !hmd_handle) return HMD_HANDLE_INVALID;
+    if (!info) return HMD_PARAMETER_NULL;
+    hmd_fill_info(info);
+    return 0;
+}
+/* OrbisHmdFieldOfView: tangents of one eye's half angles: outer, inner, top, bottom (read at
+ * 0x7fc305: the game's aspect is (out + in) / (top + bottom)). Close to the PSVR's. */
+static ABI int32_t hmd_field_of_view(int32_t handle, float *fov) {
+    if (!fake_psvr() || handle!=hmd_handle || !hmd_handle) return HMD_HANDLE_INVALID;
+    if (!fov) return HMD_PARAMETER_NULL;
+    fov[0]=1.20f; fov[1]=1.03f; fov[2]=1.23f; fov[3]=1.23f;
+    return 0;
+}
 static ABI int32_t hmd_garlic_size(void) { return 0x100000; }
 static ABI int32_t hmd_onion_size(void) { return 0x810; }
 static ABI int32_t hmd_buffer_align(void) { return 0x100; }
@@ -333,9 +390,27 @@ static ABI int32_t https_ca_list(int32_t context, CaList *list) {
 static ABI int32_t no_entitlement(void) { return (int32_t)0x80D90007; } /* APP_CONTENT DRM_NO_ENTITLEMENT */
 
 /* ---- PlayStation Camera: none attached; nothing can be opened ---- */
-static ABI int32_t camera_attached(int32_t index) { return index ? (int32_t)0x802E0000 : 0; }
+static ABI int32_t camera_attached(int32_t index) { return index ? (int32_t)0x802E0000 : fake_psvr(); }
 static ABI int32_t camera_not_connected(void) { return (int32_t)0x802E0010; }
 static ABI int32_t camera_not_open(void) { return (int32_t)0x802E0004; }
+/* GOW3_FAKE_PSVR: the camera opens and runs; it never delivers a frame (the headset's pose is not
+ * tracked from camera images here). */
+#define CAMERA_HANDLE 1
+static ABI int32_t camera_open(int32_t user, int32_t type, int32_t index, void *param) {
+    (void)param;
+    if (fake_psvr()) printf("FakePSVR: sceCameraOpen(user=%d, type=%d, index=%d)\n",user,type,index);
+    return fake_psvr() && !index ? CAMERA_HANDLE : camera_not_connected();
+}
+static ABI int32_t camera_handle_ok(int32_t handle) {
+    if (fake_psvr()) printf("FakePSVR: camera call on handle %d\n",handle);
+    return fake_psvr() && handle==CAMERA_HANDLE ? 0 : camera_not_open();
+}
+static ABI int32_t camera_no_frame(int32_t handle) {
+    static int logged;
+    if (fake_psvr() && logged++<3) printf("FakePSVR: sceCameraGetFrameData(%d)\n",handle);
+    if (!fake_psvr() || handle!=CAMERA_HANDLE) return camera_not_open();
+    return (int32_t)0x802E0011; /* SCE_CAMERA_ERROR_NOT_READY */
+}
 
 /* sceKernelUuidCreate: 16 random bytes, version 4. */
 static ABI int32_t uuid_create(unsigned char *uuid) {
@@ -607,20 +682,26 @@ static const RuntimeExport exports[]={
     {"sceKernelUuidCreate",uuid_create},
     {"sceHmdInitialize315",hmd_initialize}, {"sceHmdTerminate",hmd_terminate},
     {"sceHmdOpen",hmd_open}, {"sceHmdClose",hmd_close}, {"sceHmdGetDeviceInformation",hmd_device_info},
-    {"sceHmdGetDeviceInformationByHandle",hmd_by_handle}, {"sceHmdGetFieldOfView",hmd_by_handle},
-    {"sceHmdReprojectionInitialize",ok_noop}, {"sceHmdReprojectionFinalize",ok_noop},
-    {"sceHmdReprojectionStart",ok_noop}, {"sceHmdReprojectionStop",ok_noop},
-    {"sceHmdReprojectionSetDisplayBuffers",ok_noop}, {"sceHmdReprojectionUnsetDisplayBuffers",ok_noop},
+    {"sceHmdGetDeviceInformationByHandle",hmd_info_by_handle}, {"sceHmdGetFieldOfView",hmd_field_of_view},
+    {"sceHmdReprojectionInitialize",hmd_reprojection_log}, {"sceHmdReprojectionFinalize",ok_noop},
+    {"sceHmdReprojectionStart",hmd_reprojection_log}, {"sceHmdReprojectionStop",hmd_reprojection_log},
+    {"sceHmdReprojectionSetDisplayBuffers",hmd_reprojection_log}, {"sceHmdReprojectionUnsetDisplayBuffers",ok_noop},
     {"sceHmdReprojectionSetOutputMinColor",ok_noop},
     {"sceHmdReprojectionQueryGarlicBuffSize",hmd_garlic_size}, {"sceHmdReprojectionQueryOnionBuffSize",hmd_onion_size},
     {"sceHmdReprojectionQueryGarlicBuffAlign",hmd_buffer_align}, {"sceHmdReprojectionQueryOnionBuffAlign",hmd_buffer_align},
     {"sceHmdSetupDialogInitialize",ok_noop}, {"sceHmdSetupDialogTerminate",ok_noop},
     {"sceHmdSetupDialogOpen",ok_noop}, {"sceHmdSetupDialogClose",ok_noop},
     {"sceHmdSetupDialogUpdateStatus",dialog_finished}, {"sceHmdSetupDialogGetResult",hmd_dialog_result},
-    {"sceCameraIsAttached",camera_attached}, {"sceCameraOpen",camera_not_connected},
-    {"sceCameraClose",camera_not_open}, {"sceCameraStart",camera_not_open}, {"sceCameraStop",camera_not_open},
-    {"sceCameraSetConfig",camera_not_open}, {"sceCameraSetVideoSync",camera_not_open},
-    {"sceCameraGetFrameData",camera_not_open},
+    {"sceVrTrackerQueryMemory",vr_query_memory}, {"sceVrTrackerInit",ok_noop}, {"sceVrTrackerTerm",ok_noop},
+    {"sceVrTrackerRegisterDevice",ok_noop}, {"sceVrTrackerUnregisterDevice",ok_noop},
+    {"sceVrTrackerGpuSubmit",ok_noop}, {"sceVrTrackerGpuWaitAndCpuProcess",ok_noop},
+    {"sceVrTrackerGetResult",vr_get_result}, {"sceVrTrackerGetTime",ok_noop},
+    {"sceVrTrackerUpdateMotionSensorData",ok_noop}, {"sceVrTrackerRecalibrate",ok_noop},
+    {"sceVrTrackerGetPlayAreaWarningInfo",ok_noop},
+    {"sceCameraIsAttached",camera_attached}, {"sceCameraOpen",camera_open},
+    {"sceCameraClose",camera_handle_ok}, {"sceCameraStart",camera_handle_ok}, {"sceCameraStop",camera_handle_ok},
+    {"sceCameraSetConfig",camera_handle_ok}, {"sceCameraSetVideoSync",camera_handle_ok},
+    {"sceCameraGetFrameData",camera_no_frame},
     /* PlayGo: every chunk is installed, so its dialog finishes at once. */
     {"scePlayGoDialogInitialize",ok_noop}, {"scePlayGoDialogTerminate",ok_noop},
     {"scePlayGoDialogOpen",ok_noop}, {"scePlayGoDialogClose",ok_noop},

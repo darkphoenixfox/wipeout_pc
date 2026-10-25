@@ -219,6 +219,15 @@ int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* co
              attribute->aspect_ratio, static_cast<u32>(attribute->tiling_mode), attribute->width,
              attribute->height, attribute->pitch_in_pixel, attribute->option);
 
+    // gow3: stereo research (GOW3_FAKE_PSVR): the VR display buffers' shape, at warning level.
+    if (const char* fake = std::getenv("GOW3_FAKE_PSVR"); fake && fake[0] == '1') {
+        LOG_WARNING(Lib_VideoOut,
+                    "registered buffers {}..{}: {} x {} (pitch {}), {}, tiling {}, option {:#x}",
+                    startIndex, startIndex + bufferNum - 1, attribute->width, attribute->height,
+                    attribute->pitch_in_pixel, GetPixelFormatString(attribute->pixel_format),
+                    static_cast<u32>(attribute->tiling_mode), attribute->option);
+    }
+
     auto& group = port->groups[group_index];
     std::memcpy(&group.attrib, attribute, sizeof(BufferAttribute));
     group.is_occupied = true;
@@ -628,10 +637,20 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
 
 void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop) {
     Vulkan::Frame* frame;
-    if (index == -1) {
+    // gow3: stereo research: GOW3_FLIP_BUFFER=N shows display buffer N instead of the flipped one
+    // (in VR mode the headset's images are buffers the game never flips).
+    static const s32 shown = [] {
+        const char* value = std::getenv("GOW3_FLIP_BUFFER");
+        return value && value[0] ? std::atoi(value) : -1;
+    }();
+    const s32 source = shown >= 0 && shown < static_cast<s32>(port->buffer_slots.size()) &&
+                               port->buffer_slots[shown].group_index >= 0 && index != -1
+                           ? shown
+                           : index;
+    if (source == -1) {
         frame = presenter->PrepareBlankFrame(false);
     } else {
-        const auto& buffer = port->buffer_slots[index];
+        const auto& buffer = port->buffer_slots[source];
         ASSERT_MSG(buffer.group_index >= 0, "Trying to flip an unregistered buffer!");
         const auto& group = port->groups[buffer.group_index];
         frame = presenter->PrepareFrame(group, buffer.address_left);
