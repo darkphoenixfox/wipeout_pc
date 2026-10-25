@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The "Resolution Patch - WxH" entry of WipEout Omega Collection for any size and aspect ratio.
 
-  python tools/make_wipeout_resolution_patch.py EBOOT WIDTH HEIGHT [--write]
+  python tools/make_wipeout_resolution_patch.py EBOOT WIDTH HEIGHT [--name NAME] [--write]
       Prints (or with --write puts into patches/WipEout_Omega_Collection.xml, replacing an earlier entry
       of that size, before "Native 4K rendering") the entry for WIDTH x HEIGHT. EBOOT is the CUSA07671
       01.07 eboot.bin (sha256 3a52e910...): every site is checked against it, by its signature.
+      --name: the size's built-in name instead of WIDTHxHEIGHT ("4K" for 3840 2160).
 
 The render resolution sites (output size, half-resolution buffers) are those of the "Resolution Patch -
 1440p" entry of that file. The camera (0x3adb40 and 0x3af3a0, one constant pool each, at 0x860cfc and
@@ -100,7 +101,7 @@ def size_lines(xml, width, height):
             for comment, pattern, at, length, role in template_lines(xml)]
 
 
-def entry(image, xml, width, height):
+def entry(image, xml, width, height, name=None):
     if width % 2 or height % 2:
         raise SystemExit('the half-resolution buffers need an even width and height')
     lines = camera_lines(width, height) + size_lines(xml, width, height)
@@ -112,6 +113,7 @@ def entry(image, xml, width, height):
         address = EBOOT_BASE + found[0] + at
         body.append(f'            <!-- {comment} -->\n'
                     f'            <Line Type="bytes" Address="0x{address:08x}" Value="{value}" Pattern="{pattern}" At="{at}"/>')
+    size_name = name or f'{width}x{height}'
     aspect, name = width / height, ratio_name(width, height)
     if abs(aspect - 16 / 9) < 1e-6:
         view = 'Same 16:9 view as the game, sharper.'
@@ -123,14 +125,14 @@ def entry(image, xml, width, height):
                 'and bottom (Vert+). HUD and menus stay 16:9 across the width of the screen.')
     note = (f'Renders at {width}x{height} ({name}): output and half-resolution buffers at that size'
             f'{"" if abs(aspect - 16 / 9) < 1e-6 else " and the camera set to match"}. {view}')
-    return (f'    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - {width}x{height}" '
+    return (f'    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - {size_name}" '
             f'Note="{note}" Author="{AUTHOR}" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">\n'
             f'        <PatchList>\n' + '\n'.join(body) + '\n        </PatchList>\n    </Metadata>\n')
 
 
-def write(xml, width, height, text):
+def write(xml, size_name, text):
     source = xml.read_text(encoding='utf-8')
-    name = re.escape(f'Resolution Patch - {width}x{height}')
+    name = re.escape(f'Resolution Patch - {size_name}')
     old = re.compile(rf'    <Metadata [^>]*Name="{name}".*?</Metadata>\n', re.S)
     if old.search(source):
         source = old.sub(lambda _m: text, source)
@@ -145,13 +147,14 @@ def main():
     parser.add_argument('eboot')
     parser.add_argument('width', type=int)
     parser.add_argument('height', type=int)
+    parser.add_argument('--name', help='the built-in name of the size (4K), else WIDTHxHEIGHT')
     parser.add_argument('--xml', type=Path, default=XML)
     parser.add_argument('--write', action='store_true', help='put the entry into --xml')
     args = parser.parse_args()
     image, _text = load(args.eboot)
-    text = entry(image, args.xml, args.width, args.height)
+    text = entry(image, args.xml, args.width, args.height, args.name)
     if args.write:
-        write(args.xml, args.width, args.height, text)
+        write(args.xml, args.name or f'{args.width}x{args.height}', text)
     else:
         print(text, end='')
 

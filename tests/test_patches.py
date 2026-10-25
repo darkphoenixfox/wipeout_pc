@@ -424,7 +424,7 @@ class HalfResolutionTests(unittest.TestCase):
                                  'Resolution Patch - 3840x1600', 'Resolution Patch - 5120x1440',
                                  'Resolution Patch - 1440x1080', 'Resolution Patch - 1920x1440',
                                  'Resolution Patch - 2048x1536', 'Resolution Patch - 2560x1920',
-                                 'Native 4K rendering (no checkerboard)'])
+                                 'Resolution Patch - 4K', 'Native 4K rendering (no checkerboard)'])
         # Every resolution patch is one the in-game menu shows (GOW3_ALLOWED_RESOLUTIONS).
         allowed = game_profiles.PROFILES['CUSA07671']['env']['GOW3_ALLOWED_RESOLUTIONS'].split(';')
         self.assertEqual(sorted(n.split(' - ')[1] for n in names if n.startswith('Resolution Patch')),
@@ -444,7 +444,7 @@ class HalfResolutionTests(unittest.TestCase):
             if not meta.get('Name').startswith('Resolution Patch'):
                 continue
             name = meta.get('Name').split(' - ')[1]
-            width, height = {'1440p': (2560, 1440)}.get(name) or map(int, name.split('x'))
+            width, height = {'1440p': (2560, 1440), '4K': (3840, 2160)}.get(name) or map(int, name.split('x'))
             lines = {line.get('Address'): line.get('Value') for line in meta.iter('Line')}
             self.assertEqual(size(lines['0x00bfa2e8']), width, meta.get('Name'))        # output width
             self.assertEqual(size(lines['0x00bfa2f6']), height, meta.get('Name'))       # output height
