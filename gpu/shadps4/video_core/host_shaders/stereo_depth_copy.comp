@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// gow3: stereo 3D (vk_stereo_depth.cpp): copies the scene depth (sample 0 when DEPTH_MS) into an
+// R32F image when the scene is drawn into its display buffer, before the game clears it.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#ifdef DEPTH_MS
+layout(binding = 0) uniform texture2DMS depth_tex;
+#else
+layout(binding = 0) uniform texture2D depth_tex;
+#endif
+layout(binding = 1, r32f) uniform writeonly image2D out_img;
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(out_img)))) {
+        return;
+    }
+    imageStore(out_img, pixel, vec4(texelFetch(depth_tex, pixel, 0).r));
+}

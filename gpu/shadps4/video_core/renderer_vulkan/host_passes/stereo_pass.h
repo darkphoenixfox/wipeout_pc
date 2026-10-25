@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// gow3: stereo 3D from the picture and the scene depth (GOW3_STEREO, host_shaders/stereo.comp):
+// the presented picture becomes a half-width side-by-side pair, left eye on the left.
+
+#pragma once
+
+#include <vector>
+
+#include "common/types.h"
+#include "video_core/renderer_vulkan/vk_common.h"
+#include "video_core/texture_cache/image.h"
+
+namespace Vulkan::HostPasses {
+
+class StereoPass {
+public:
+    struct Settings {
+        bool enable = false;
+        float separation = 0.03f;  ///< parallax at infinity, fraction of one eye's width
+        float convergence = 0.02f; ///< nearness (1 - depth) of the screen plane
+        float max_popout = 0.02f;  ///< largest parallax in front of the screen
+        bool reversed = false;     ///< depth 1 is near
+        bool show_depth = false;   ///< debug: nearness as grey
+    };
+    /// The settings from GOW3_STEREO, GOW3_STEREO_SEPARATION, _CONVERGENCE, _POPOUT, _REVERSED
+    /// and _SHOW_DEPTH, read once.
+    static Settings FromEnvironment();
+
+    struct Depth {
+        vk::ImageView view{}; ///< R32F scene depth, ShaderReadOnlyOptimal; null: none (eyes alike)
+        vk::Extent2D size{};
+        /// The picture before the HUD (the input's format), ShaderReadOnlyOptimal; null: no HUD
+        vk::ImageView scene{};
+    };
+
+    void Create(vk::Device device, VmaAllocator allocator, u32 num_images);
+
+    /// The side-by-side picture of `input` (ShaderReadOnlyOptimal), ShaderReadOnlyOptimal.
+    vk::ImageView Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D input_size,
+                         const Depth& depth, const Settings& settings);
+
+private:
+    struct Img {
+        bool dirty = true;
+        VideoCore::UniqueImage image;
+        vk::UniqueImageView view;
+    };
+
+    void CreateImage(Img& img) const;
+
+    vk::Device device{};
+    vk::UniqueDescriptorSetLayout descriptor_set_layout{};
+    vk::UniqueSampler sampler{};
+    vk::UniquePipelineLayout pipeline_layout{};
+    vk::UniquePipeline pipeline{};
+    vk::Extent2D cur_size{};
+    u32 cur_image = 0;
+    std::vector<Img> images;
+};
+
+} // namespace Vulkan::HostPasses

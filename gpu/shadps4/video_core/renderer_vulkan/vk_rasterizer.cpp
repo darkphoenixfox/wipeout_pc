@@ -57,6 +57,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     // Object motion first: it fixes the buffer addresses the motion shader variants embed.
     object_motion = std::make_unique<ObjectMotion>(instance, scheduler);
     camera_motion = std::make_unique<CameraMotion>(instance, scheduler, texture_cache, runtime);
+    stereo_depth = std::make_unique<StereoDepth>(instance, scheduler, runtime);
     camera_motion->SetObjectMotion(object_motion.get());
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets);
@@ -284,6 +285,63 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         }
     }
 
+    // gow3: stereo 3D (GOW3_STEREO): the first draw into a new display buffer is the finished
+    // scene (as for the HUD above); the full-size depth written before it is the scene's.
+    static const bool stereo = [] {
+        const char* value = std::getenv("GOW3_STEREO");
+        return value && value[0] == '1';
+    }();
+    // The second draw into it starts the HUD: the picture is copied before it.
+    if (stereo && cb_descs[0].first && regs.color_buffers[0].Address() == stereo_buffer &&
+        ++stereo_draws == 2) {
+        stereo_depth->CaptureScene(stereo_buffer, texture_cache.GetImage(cb_descs[0].first));
+    }
+    if (stereo && cb_descs[0].first &&
+        FrameCapture::IsDisplayBuffer(regs.color_buffers[0].Address()) &&
+        regs.color_buffers[0].Address() != stereo_buffer) {
+        stereo_buffer = regs.color_buffers[0].Address();
+        stereo_draws = 1;
+        stereo_depth->NewPicture(stereo_buffer);
+        const auto& size = texture_cache.GetImage(cb_descs[0].first).info.size;
+        auto* depth = stereo_scene_depth.id
+                          ? texture_cache.TryGetImage(stereo_scene_depth.id, stereo_scene_depth.uid)
+                          : nullptr;
+        // At least the buffer's size and of its shape (not a square shadow map).
+        const bool fits = depth && depth->info.size.width >= size.width &&
+                          depth->info.size.height >= size.height &&
+                          u64(depth->info.size.width) * size.height * 50 <
+                              u64(depth->info.size.height) * size.width * 51 &&
+                          u64(depth->info.size.width) * size.height * 51 >
+                              u64(depth->info.size.height) * size.width * 50;
+        if (fits) {
+            stereo_depth->Capture(stereo_buffer, *depth);
+        } else {
+            stereo_depth->Drop(stereo_buffer);
+        }
+        const auto chosen = fits ? stereo_scene_depth.id : VideoCore::ImageId{};
+        stereo_scene_depth = {}; // a later frame without a scene (a menu) gets none
+        // GOW3_STEREO_DEBUG=1: every 300th frame, the depth targets written since the last one.
+        static const bool debug = [] {
+            const char* value = std::getenv("GOW3_STEREO_DEBUG");
+            return value && value[0] == '1';
+        }();
+        static u32 frame = 0;
+        if (debug && ++frame % 300 == 0) {
+            std::printf("Stereo debug: frame %u, display %ux%u, %zu depth targets:\n", frame,
+                        size.width, size.height, stereo_debug_targets.size());
+            for (const auto& [id, draws] : stereo_debug_targets) {
+                const auto* image = texture_cache.TryGetImage(id, 0);
+                if (!image) continue;
+                std::printf("  depth %u: %ux%u, %u samples, %s, %u draws (%u writing)%s\n", id.index,
+                            image->info.size.width, image->info.size.height,
+                            image->info.num_samples, vk::to_string(image->info.pixel_format).c_str(),
+                            draws[0], draws[1],
+                            id == chosen ? " <- chosen" : "");
+            }
+        }
+        stereo_debug_targets.clear();
+    }
+
     if (GetEffectiveDepthStencilState(regs).needs_attachment) {
         const auto htile_address = regs.depth_htile_data_base.GetAddress();
         const auto& hint = DbExtent();
@@ -298,6 +356,14 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             tag, regs.depth_buffer, regs.depth_view, regs.depth_control, htile_address, hint));
         auto& image = texture_cache.GetImage(image_id);
         image.binding.is_target = 1u;
+        if (stereo) {
+            auto& draws = stereo_debug_targets[image_id];
+            ++draws[0];
+            draws[1] += regs.depth_control.depth_write_enable ? 1 : 0;
+        }
+        if (stereo && regs.depth_control.depth_write_enable && image.info.size.width >= 640) {
+            stereo_scene_depth = {image_id, image.image_uid};
+        }
     } else {
         db_desc.first = {};
     }

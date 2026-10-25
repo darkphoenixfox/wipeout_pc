@@ -319,6 +319,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
+    if (stereo_settings.enable) {
+        stereo_pass.Create(device, instance.GetAllocator(), num_images);
+    }
     Gow3Overlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
     const bool binary_cache = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARIES", true) &&
@@ -647,6 +650,32 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         runtime.FlushBarriers();
     }
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
+
+    // gow3: stereo 3D (GOW3_STEREO): the picture and its scene depth become a side-by-side pair.
+    if (stereo_settings.enable && !upscaled) {
+        const auto scene = rasterizer->GetStereoDepth().Find(cpu_address);
+        static bool logged = false;
+        if (scene.view && !logged) {
+            logged = true;
+            std::printf("Stereo: scene depth %ux%u, picture %ux%u\n", scene.size.width,
+                        scene.size.height, image_size.width, image_size.height);
+        }
+        vk::ImageView scene_view{};
+        if (scene.scene) {
+            const auto device = instance.GetDevice();
+            scene_view = Check(device.createImageView({
+                .image = scene.scene,
+                .viewType = vk::ImageViewType::e2D,
+                .format = view_info.format,
+                .components = {vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
+                               vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eOne},
+                .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+            }));
+            draw_scheduler.DeferOperation([device, scene_view] { device.destroyImageView(scene_view); });
+        }
+        image_view = stereo_pass.Render(cmdbuf, image_view, image_size,
+                                        {scene.view, scene.size, scene_view}, stereo_settings);
+    }
 
     // gow3: FSR 1, RCAS and its strength come from the in-game menu, every frame.
     const auto& graphics = Gow3Settings::Get();
