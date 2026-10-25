@@ -430,6 +430,12 @@ void ImageTab() {
         SliderRow("3D pop-out", s.stereo_popout, 0, 100, "%d",
                   "The most that near objects (your ship) come out of the screen.");
         CheckRow("Swap eyes", s.stereo_swap, "Right eye on the left: for cross-eyed viewing.");
+        static const char* const output_labels[] = {"Side by side", "LeiaSR display"};
+        ChoiceRow("3D output", s.stereo_output, output_labels, nullptr, 2,
+                  "Side by side: for displays that convert it to 3D. LeiaSR display: woven for a "
+                  "Samsung Odyssey 3D or Acer SpatialLabs with eye tracking, both eyes at full "
+                  "width (needs gow3_leiasr.dll and the SR Platform; the window must be on the "
+                  "3D display).");
         ImGui::EndDisabled();
         ImGui::EndTable();
     }

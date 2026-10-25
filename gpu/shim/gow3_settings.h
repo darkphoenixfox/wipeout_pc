@@ -24,6 +24,9 @@ enum DebugView : int { DebugNone = 0, DebugReactive = 1, DebugMotion = 2, DebugV
 /// WipEout's HUD area (gow3.ini hud_aspect; run.py passes GOW3_HUD_ASPECT, the launcher sets it).
 inline constexpr const char* HudAspectKeys[] = {"16:9", "4:3", "16:10", "21:9", "32:9", "fill"};
 inline constexpr int HudAspectCount = 6;
+/// gow3.ini stereo_output: side by side, or woven for a LeiaSR display (gow3_leiasr.dll).
+inline constexpr const char* StereoOutputKeys[] = {"sbs", "leiasr"};
+inline constexpr int StereoOutputCount = 2;
 
 /// Live output resolutions: the upscaler's output and the UI host targets.
 inline constexpr int OutputWidths[] = {1280, 1920, 2560, 3840};
@@ -84,6 +87,8 @@ struct Values {
     std::atomic<bool> stereo{false};
     std::atomic<int> stereo_depth{30}, stereo_focus{20}, stereo_popout{20};
     std::atomic<bool> stereo_swap{false};
+    /// StereoOutputKeys: the side-by-side picture, or woven for a LeiaSR display (vk_leiasr.h).
+    std::atomic<int> stereo_output{0};
     /// HudAspectKeys index; only kept here so a save from the menu does not drop it.
     std::atomic<int> hud_aspect{0};
     /// Controller vibration strength in percent; 0 turns it off (runtime_pad.c). Live.

@@ -21,6 +21,7 @@ layout(binding = 3) uniform sampler2D scene_tex;
 
 layout(push_constant) uniform Constants {
     vec2 out_size;      // pixels, both eyes
+    vec2 in_size;       // pixels of the picture (half the output's width or all of it)
     vec2 depth_size;    // pixels of the depth grid the picture is drawn on
     float separation;   // parallax at infinity, fraction of one eye's width
     float convergence;  // nearness on the screen plane
@@ -65,7 +66,7 @@ void main() {
         }
     }
     if ((flags & 8u) != 0u) {
-        const ivec2 here = clamp(ivec2(uv * out_size), ivec2(0), ivec2(out_size) - 1);
+        const ivec2 here = clamp(ivec2(uv * in_size), ivec2(0), ivec2(in_size) - 1);
         const vec3 shown = texelFetch(color_tex, here, 0).rgb;
         const vec3 scene = texelFetch(scene_tex, here, 0).rgb;
         if (any(greaterThan(abs(shown - scene), vec3(1.5 / 255.0)))) {

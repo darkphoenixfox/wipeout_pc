@@ -396,6 +396,7 @@ INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1',
                 'async_shaders': '1', 'deferred_readback': '1', 'stale_readback': '1',
                 'render_resolution': 'native', 'engine_fps': '120', 'hud_aspect': '16:9',
                 'stereo': '0', 'stereo_depth': '30', 'stereo_focus': '20', 'stereo_popout': '20', 'stereo_swap': '0',
+                'stereo_output': 'sbs',
                 'frames_queued': '1', 'cheat_very_hard': '0', 'cheat_double_jumps': '0',
                 'anisotropy': '0', 'vibration': '100', 'mouse_prompt_distance': '48', 'mouse_lock': '1',
                 'mouse_aim_style': '0', 'mouse_aim_sensitivity': '100'}
@@ -1159,6 +1160,7 @@ HUD_ASPECT_CHOICES = [('16:9', ('16:9 (game)',)), ('4:3', ('4:3',)), ('16:10', (
 # 3D side by side (gow3.ini stereo_*): the in-game menu has the same controls, as sliders.
 STEREO_LEVELS = [(str(n), (str(n),)) for n in range(0, 101, 5)]
 STEREO_FOCUS = [(str(n), (str(n),)) for n in [1] + list(range(5, 101, 5))]
+STEREO_OUTPUTS = [('sbs', ('Side by side',)), ('leiasr', ('LeiaSR display',))]
 ENGINE_FPS_CHOICES = [('60', ('60 (original)',)), ('100', ('100',)), ('120', ('120',)), ('240', ('240',))]
 
 
@@ -1781,6 +1783,10 @@ class Launcher:
         self.row(f, _('3D pop-out'), self.choice(f, 'stereo_popout', 'ini', STEREO_LEVELS),
                  _('The most that near objects (your ship) come out of the screen.'))
         self.check(f, 'stereo_swap', 'ini', _('Swap eyes'), _('Right eye on the left: for cross-eyed viewing.'))
+        self.row(f, _('3D output'), self.choice(f, 'stereo_output', 'ini', STEREO_OUTPUTS),
+                 _('Side by side: for displays that convert it to 3D. LeiaSR display: woven for a Samsung Odyssey 3D '
+                   'or Acer SpatialLabs with eye tracking, both eyes at full width. It needs the SR Platform '
+                   '(the display\'s software) and borderless or fullscreen on the 3D display.'))
         self.section(f, _('Textures'))
         self.row(f, _('Anisotropic filtering'), self.choice(f, 'anisotropy', 'ini', ANISOTROPY),
                  _('Sharper floors and walls seen at an angle, at little cost on most graphics cards.'),

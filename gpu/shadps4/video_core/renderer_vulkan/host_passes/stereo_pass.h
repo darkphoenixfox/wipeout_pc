@@ -22,6 +22,8 @@ public:
         bool swap = false;         ///< right eye on the left
         bool reversed = false;     ///< depth 1 is near (GOW3_STEREO_REVERSED)
         bool show_depth = false;   ///< debug: nearness as grey (GOW3_STEREO_SHOW_DEPTH)
+        bool leiasr = false;       ///< woven for a LeiaSR display (Gow3Settings::stereo_output)
+        bool full_width = false;   ///< each eye at the picture's width (output twice as wide)
     };
     /// This frame's settings: the in-game menu's (Gow3Settings), the debug ones from the
     /// environment.
@@ -36,7 +38,8 @@ public:
 
     void Create(vk::Device device, VmaAllocator allocator, u32 num_images);
 
-    /// The side-by-side picture of `input` (ShaderReadOnlyOptimal), ShaderReadOnlyOptimal.
+    /// The side-by-side picture of `input` (ShaderReadOnlyOptimal), ShaderReadOnlyOptimal: the
+    /// input's size, or twice its width with Settings::full_width.
     vk::ImageView Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D input_size,
                          const Depth& depth, const Settings& settings);
 

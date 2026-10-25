@@ -48,6 +48,7 @@ enum SchedulerType {
 };
 
 class Rasterizer;
+class LeiaSR;
 
 class Presenter {
 public:
@@ -131,6 +132,7 @@ private:
     Swapchain swapchain;
     Runtime runtime;
     std::unique_ptr<Rasterizer> rasterizer;
+    std::unique_ptr<LeiaSR> leiasr; ///< gow3: 3D woven for LeiaSR displays (vk_leiasr.h)
     VideoCore::TextureCache& texture_cache;
     vk::UniqueCommandPool command_pool;
     std::vector<Frame> present_frames;

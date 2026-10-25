@@ -118,6 +118,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.stereo_popout = value.empty() ? 20 : std::clamp(i, 0, 100);
     } else if (key == "stereo_swap") {
         v.stereo_swap = i != 0;
+    } else if (key == "stereo_output") {
+        for (int o = 0; o < StereoOutputCount; ++o) {
+            if (value == StereoOutputKeys[o]) v.stereo_output = o;
+        }
     } else if (key == "hud_aspect") {
         for (int a = 0; a < HudAspectCount; ++a) {
             if (value == HudAspectKeys[a]) v.hud_aspect = a;
@@ -349,9 +353,10 @@ void Save() {
                        "mouse_aim_sensitivity=%d\n",
                  v.anisotropy.load(), v.vibration.load(), v.mouse_prompt_distance.load(), int(v.mouse_lock.load()),
                  v.mouse_aim_style.load(), v.mouse_aim_sensitivity.load());
-    std::fprintf(file, "stereo=%d\nstereo_depth=%d\nstereo_focus=%d\nstereo_popout=%d\nstereo_swap=%d\nhud_aspect=%s\n",
+    std::fprintf(file, "stereo=%d\nstereo_depth=%d\nstereo_focus=%d\nstereo_popout=%d\nstereo_swap=%d\nstereo_output=%s\nhud_aspect=%s\n",
                  int(v.stereo.load()), v.stereo_depth.load(), v.stereo_focus.load(),
                  v.stereo_popout.load(), int(v.stereo_swap.load()),
+                 StereoOutputKeys[std::clamp(v.stereo_output.load(), 0, StereoOutputCount - 1)],
                  HudAspectKeys[std::clamp(v.hud_aspect.load(), 0, HudAspectCount - 1)]);
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"

@@ -435,6 +435,10 @@ bool Instance::CreateDevice() {
             feature_chain.get<vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR>();
     }
     shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
+#ifdef _WIN32
+    // gow3: LeiaSR 3D (vk_leiasr.cpp) imports Direct3D 11 textures.
+    external_memory_win32 = add_extension("VK_KHR_external_memory_win32");
+#endif
     if (shader_clock) {
         shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();
         LOG_INFO(Render_Vulkan, "- shaderSubgroupClock: {}",

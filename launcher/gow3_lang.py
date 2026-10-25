@@ -1418,6 +1418,14 @@ EXTRA['pt'].update({
     '16:9 (game)': '16:9 (jogo)',
     'Full screen (stretched)': 'Tela inteira (esticado)',
     '3D': '3D',
+    '3D output':
+        'Saída 3D',
+    'Side by side':
+        'Lado a lado',
+    'LeiaSR display':
+        'Tela LeiaSR',
+    "Side by side: for displays that convert it to 3D. LeiaSR display: woven for a Samsung Odyssey 3D or Acer SpatialLabs with eye tracking, both eyes at full width. It needs the SR Platform (the display's software) and borderless or fullscreen on the 3D display.":
+        'Lado a lado: para telas que convertem em 3D. Tela LeiaSR: entrelaçado para um Samsung Odyssey 3D ou Acer SpatialLabs com rastreamento dos olhos, os dois olhos em largura total. Precisa da SR Platform (o software da tela) e de janela sem bordas ou tela cheia na tela 3D.',
     '3D side by side':
         '3D lado a lado',
     "Left and right eye pictures side by side, made from the scene's depth, for 3D displays that take side-by-side input (turn on their side-by-side 3D mode). The HUD stays on the screen. The in-game menu (Insert > Image) changes all of these while you play.":
@@ -1454,6 +1462,14 @@ EXTRA['es'].update({
     '16:9 (game)': '16:9 (juego)',
     'Full screen (stretched)': 'Pantalla completa (estirado)',
     '3D': '3D',
+    '3D output':
+        'Salida 3D',
+    'Side by side':
+        'Lado a lado',
+    'LeiaSR display':
+        'Pantalla LeiaSR',
+    "Side by side: for displays that convert it to 3D. LeiaSR display: woven for a Samsung Odyssey 3D or Acer SpatialLabs with eye tracking, both eyes at full width. It needs the SR Platform (the display's software) and borderless or fullscreen on the 3D display.":
+        'Lado a lado: para pantallas que lo convierten en 3D. Pantalla LeiaSR: entrelazado para un Samsung Odyssey 3D o Acer SpatialLabs con seguimiento ocular, ambos ojos a ancho completo. Necesita la SR Platform (el software de la pantalla) y ventana sin bordes o pantalla completa en la pantalla 3D.',
     '3D side by side':
         '3D lado a lado',
     "Left and right eye pictures side by side, made from the scene's depth, for 3D displays that take side-by-side input (turn on their side-by-side 3D mode). The HUD stays on the screen. The in-game menu (Insert > Image) changes all of these while you play.":

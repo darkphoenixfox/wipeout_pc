@@ -142,6 +142,11 @@ public:
     }
 
     /// Returns true if VK_KHR_maintenance8 is supported
+    /// gow3: Direct3D 11 textures can be imported (LeiaSR 3D, vk_leiasr.cpp).
+    bool IsExternalMemoryWin32Supported() const {
+        return external_memory_win32;
+    }
+
     bool IsMaintenance8Supported() const {
         return maintenance_8;
     }
@@ -590,6 +595,7 @@ private:
     bool image_2d_view_of_3d{};
     bool image_view_min_lod{};
     bool shader_clock{};
+    bool external_memory_win32{};
     bool pipeline_executable_properties{}; // gow3: GOW3_WAVE_STATS=1 (vk_wave_stats.h)
     bool amd_shader_info{};                // gow3: with it, VK_AMD_shader_info when present
     bool compute_shader_derivatives{};

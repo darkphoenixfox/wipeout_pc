@@ -16,6 +16,7 @@ namespace {
 
 struct PushConstants {
     std::array<float, 2> out_size;
+    std::array<float, 2> in_size;
     std::array<float, 2> depth_size;
     float separation;
     float convergence;
@@ -42,6 +43,7 @@ StereoPass::Settings StereoPass::Current() {
         .swap = v.stereo_swap,
         .reversed = reversed,
         .show_depth = show_depth,
+        .leiasr = v.stereo_output == 1,
     };
     static bool logged = false;
     if (settings.enable && !logged) {
@@ -113,8 +115,10 @@ void StereoPass::Create(vk::Device device_, VmaAllocator allocator, u32 num_imag
 vk::ImageView StereoPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
                                  vk::Extent2D input_size, const Depth& depth,
                                  const Settings& settings) {
-    if (input_size != cur_size) {
-        cur_size = input_size;
+    const vk::Extent2D out_size{settings.full_width ? input_size.width * 2 : input_size.width,
+                                input_size.height};
+    if (out_size != cur_size) {
+        cur_size = out_size;
         for (auto& img : images) {
             img.dirty = true;
         }
@@ -149,7 +153,8 @@ vk::ImageView StereoPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
     flags |= depth.scene ? 8u : 0u;
     flags |= settings.swap ? 16u : 0u;
     const PushConstants push{
-        .out_size = {float(input_size.width), float(input_size.height)},
+        .out_size = {float(out_size.width), float(out_size.height)},
+        .in_size = {float(input_size.width), float(input_size.height)},
         .depth_size = {float(std::min(input_size.width, depth.size.width ? depth.size.width : 1u)),
                        float(std::min(input_size.height, depth.size.height ? depth.size.height : 1u))},
         .separation = settings.separation,
@@ -190,7 +195,7 @@ vk::ImageView StereoPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
     cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *pipeline_layout, 0, writes);
     cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
                          &push);
-    cmdbuf.dispatch((input_size.width + 7) / 8, (input_size.height + 7) / 8, 1);
+    cmdbuf.dispatch((out_size.width + 7) / 8, (out_size.height + 7) / 8, 1);
 
     const vk::ImageMemoryBarrier2 leave{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
