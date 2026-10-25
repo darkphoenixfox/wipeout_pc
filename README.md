@@ -52,6 +52,8 @@ Requirements: Windows 10 or 11 (64-bit), a CPU with AVX, a GPU with Vulkan 1.3. 
 - Not available with HDR on; LeiaSR output costs some frame rate. Cutscene videos are flat. If
   3D falls back to side by side, `user/last_run.log` gives the reason (lines starting `LeiaSR:`).
 
+How this fork follows the original project and how it is released: [docs/fork.md](docs/fork.md).
+
 ## Help make it better
 
 - ⭐ **Star the repo** if you like it. It helps other players find the port.

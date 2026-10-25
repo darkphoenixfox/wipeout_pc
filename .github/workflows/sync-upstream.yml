@@ -1,0 +1,66 @@
+# This fork follows AbdelmoumenDeghbouche/wipeout_pc (docs/fork.md). Every day, or by hand
+# (Actions > Sync upstream > Run workflow), upstream's main is merged into a branch
+# sync/upstream-<commit> and offered as a pull request into main. When it does not merge by
+# itself, an issue lists the files to merge by hand (tools/sync_upstream.sh).
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    if: github.repository == 'darkphoenixfox/wipeout_pc'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge upstream main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/AbdelmoumenDeghbouche/wipeout_pc.git
+          git fetch upstream main
+          count=$(git rev-list --count HEAD..upstream/main)
+          if [ "$count" = 0 ]; then
+            echo 'main has every upstream commit.'
+            exit 0
+          fi
+          upstream=$(git rev-parse --short upstream/main)
+          branch="sync/upstream-$upstream"
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+            echo "$branch is already offered."
+            exit 0
+          fi
+          commits=$(git log --format='- %h %s' HEAD..upstream/main)
+          git switch -c "$branch"
+          if git merge --no-ff upstream/main -m "Merge upstream main ($upstream)"; then
+            git push origin "$branch"
+            printf '%s\n' \
+              "Upstream's main has $count new commits; they merge without conflicts." '' \
+              "$commits" '' \
+              'Before merging: build, test and play (docs/fork.md). A release with LeiaSR output is' \
+              'packaged on a machine with the LeiaSR SDK.' > body.md
+            gh pr create --base main --head "$branch" --title "Sync upstream ($count commits, $upstream)" \
+              --body-file body.md
+          else
+            files=$(git diff --name-only --diff-filter=U | sed 's/^/- /')
+            git merge --abort
+            title="Upstream sync needs a manual merge ($upstream)"
+            if [ -z "$(gh issue list --state open --search "in:title $title" --json number --jq '.[].number')" ]; then
+              printf '%s\n' \
+                "Upstream's main has $count new commits that conflict with this fork in:" '' \
+                "$files" '' 'Commits:' "$commits" '' \
+                'Merge them locally: bash tools/sync_upstream.sh (docs/fork.md).' > body.md
+              gh issue create --title "$title" --body-file body.md
+            fi
+          fi
