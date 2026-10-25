@@ -108,6 +108,24 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.rcas = i != 0;
     } else if (key == "rcas_strength") {
         v.rcas_strength = Gow3Graphics::ParseRcasStrength(value.empty() ? -1 : i);
+    } else if (key == "stereo") {
+        v.stereo = i != 0;
+    } else if (key == "stereo_depth") {
+        v.stereo_depth = value.empty() ? 30 : std::clamp(i, 0, 100);
+    } else if (key == "stereo_focus") {
+        v.stereo_focus = value.empty() ? 20 : std::clamp(i, 1, 100);
+    } else if (key == "stereo_popout") {
+        v.stereo_popout = value.empty() ? 20 : std::clamp(i, 0, 100);
+    } else if (key == "stereo_swap") {
+        v.stereo_swap = i != 0;
+    } else if (key == "stereo_output") {
+        for (int o = 0; o < StereoOutputCount; ++o) {
+            if (value == StereoOutputKeys[o]) v.stereo_output = o;
+        }
+    } else if (key == "hud_aspect") {
+        for (int a = 0; a < HudAspectCount; ++a) {
+            if (value == HudAspectKeys[a]) v.hud_aspect = a;
+        }
     } else if (key == "frames_queued") {
         v.frames_queued = Gow3Graphics::ParseFramesQueued(value.empty() ? -1 : i);
     } else if (key == "render_resolution") {
@@ -199,6 +217,7 @@ void Load() {
         {"GOW3_ASYNC_SHADERS", "async_shaders"},      {"GOW3_DEFERRED_READBACK", "deferred_readback"},
         {"GOW3_STALE_READBACK", "stale_readback"},     {"GOW3_FSR1", "fsr1"},
         {"GOW3_RCAS", "rcas"},                        {"GOW3_FRAMES_AHEAD", "frames_queued"},
+        {"GOW3_STEREO", "stereo"},
         {"GOW3_ANISOTROPY", "anisotropy"},            {"GOW3_VIBRATION", "vibration"},
         {"GOW3_MOUSE_PROMPT_DISTANCE", "mouse_prompt_distance"}, {"GOW3_MOUSE_LOCK", "mouse_lock"},
         {"GOW3_MOUSE_AIM_STYLE", "mouse_aim_style"}, {"GOW3_MOUSE_AIM_SENSITIVITY", "mouse_aim_sensitivity"},
@@ -334,6 +353,11 @@ void Save() {
                        "mouse_aim_sensitivity=%d\n",
                  v.anisotropy.load(), v.vibration.load(), v.mouse_prompt_distance.load(), int(v.mouse_lock.load()),
                  v.mouse_aim_style.load(), v.mouse_aim_sensitivity.load());
+    std::fprintf(file, "stereo=%d\nstereo_depth=%d\nstereo_focus=%d\nstereo_popout=%d\nstereo_swap=%d\nstereo_output=%s\nhud_aspect=%s\n",
+                 int(v.stereo.load()), v.stereo_depth.load(), v.stereo_focus.load(),
+                 v.stereo_popout.load(), int(v.stereo_swap.load()),
+                 StereoOutputKeys[std::clamp(v.stereo_output.load(), 0, StereoOutputCount - 1)],
+                 HudAspectKeys[std::clamp(v.hud_aspect.load(), 0, HudAspectCount - 1)]);
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");

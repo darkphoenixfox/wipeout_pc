@@ -17,16 +17,19 @@ PROFILES = {
     # the frame limit turns on immediate flips, which flip above the vblank rate on demand.
     # GOW3_ALLOWED_RESOLUTIONS: only these built-in sizes have a resolution patch in
     # patches/WipEout_Omega_Collection.xml; the other built-ins are hidden from the in-game menu.
-    # GOW3_HUD_16X9: on a render resolution wider than 16:9 the HUD stays 16:9 in the middle
-    # (the HUD is laid out for 1920x1080; vk_rasterizer.cpp PrepareRenderState).
+    # GOW3_HUD_16X9: on a render resolution wider than 16:9 the HUD stays 16:9 in the middle, on a
+    # taller one (4:3) 16:9 across the width (the HUD is laid out for 1920x1080;
+    # vk_rasterizer.cpp PrepareRenderState).
     'CUSA07671': {'name': 'WipEout Omega Collection',
                   'modules': ('libc.prx', 'libSceFios2.prx', 'libSceNpToolkit2.prx'),
                   'env': {'GOW3_RED_ZONE': '1', 'GOW3_ENGINE_FPS': '240', 'GOW3_HUD_16X9': '1',
-                          'GOW3_ALLOWED_RESOLUTIONS': 'native;1440p;2560x1080;3440x1440;5120x2160'}},
+                          'GOW3_ALLOWED_RESOLUTIONS': ('native;1440p;4K;2560x1080;3440x1440;3840x1600;5120x2160;5120x1440;'
+                                                       '1440x1080;1920x1440;2048x1536;2560x1920')}},
     'CUSA05670': {'name': 'WipEout Omega Collection',
                   'modules': ('libc.prx', 'libSceFios2.prx', 'libSceNpToolkit2.prx'),
                   'env': {'GOW3_RED_ZONE': '1', 'GOW3_ENGINE_FPS': '240', 'GOW3_HUD_16X9': '1',
-                          'GOW3_ALLOWED_RESOLUTIONS': 'native;1440p;2560x1080;3440x1440;5120x2160'}},
+                          'GOW3_ALLOWED_RESOLUTIONS': ('native;1440p;4K;2560x1080;3440x1440;3840x1600;5120x2160;5120x1440;'
+                                                       '1440x1080;1920x1440;2048x1536;2560x1920')}},
     'CUSA01623': {'name': 'God of War III', 'modules': ('libc.prx', 'libSceFios2.prx')},
 }
 DEFAULT = {'name': None, 'modules': ('libc.prx', 'libSceFios2.prx')}

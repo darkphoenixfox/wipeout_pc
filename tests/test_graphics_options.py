@@ -32,6 +32,7 @@ class GraphicsOptionsTest(unittest.TestCase):
                 'deferred_readback': '1',
                 'stale_readback': '1',
                 'async_shaders': '1',
+                'hud_aspect': '16:9',
             },
         )
 
@@ -238,8 +239,14 @@ class GraphicsOptionsTest(unittest.TestCase):
                 'GOW3_DEFERRED_READBACK': '1',
                 'GOW3_STALE_READBACK': '0',
                 'GOW3_ASYNC_SHADERS': '1',
+                'GOW3_HUD_ASPECT': '1.777778',
             },
         )
+
+    def test_hud_aspect(self):
+        self.assertEqual(g.environment(g.startup_options({'hud_aspect': '4:3'}))['GOW3_HUD_ASPECT'], '1.333333')
+        self.assertEqual(g.environment(g.startup_options({'hud_aspect': 'fill'}))['GOW3_HUD_ASPECT'], '0.000000')
+        self.assertEqual(g.startup_options({'hud_aspect': '5:4'})['hud_aspect'], '16:9')  # not a choice: the default
 
 
 class WindowSizeTest(unittest.TestCase):

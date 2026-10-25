@@ -48,6 +48,13 @@ cp launcher/gow3.ico launcher/gow3.png launcher/Cinzel-Black.ttf launcher/OFL-Ci
 for exe in gow3-probe.exe gow3-gpu-capabilities.exe; do
     llvm-strip --strip-debug -o "$dest/bin/$exe" "out/$exe"
 done
+# The LeiaSR bridge (gpu/leiasr_bridge, built with MSVC and the LeiaSR SDK) when it was built: 3D
+# output "LeiaSR display" loads it; the SR Platform installed with the display provides its DLLs.
+if [[ -f out/leiasr-bridge/Release/gow3_leiasr.dll ]]; then
+    cp out/leiasr-bridge/Release/gow3_leiasr.dll "$dest/bin/"
+else
+    echo 'Note: out/leiasr-bridge/Release/gow3_leiasr.dll not built: no LeiaSR output in this package'
+fi
 # Every DLL the executables load from the CLANG64 tree (SDL3, FFmpeg, Vulkan loader, ...).
 ldd "$dest/bin/gow3-probe.exe" "$dest/bin/gow3-gpu-capabilities.exe" |
     awk '/\/clang64\/bin\// {print $3}' | sort -u | while read -r dll; do

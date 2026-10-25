@@ -17,6 +17,7 @@
 #include "gow3_graphics.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
+#include "video_core/renderer_vulkan/vk_leiasr.h"
 #include "video_core/renderer_vulkan/vk_warmup_inbox.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/texture_cache/image.h"
@@ -319,6 +320,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
+    leiasr = std::make_unique<LeiaSR>(instance, window.GetWindowInfo().render_surface);
+    stereo_pass.Create(device, instance.GetAllocator(), num_images);
     Gow3Overlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
     const bool binary_cache = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARIES", true) &&
@@ -588,7 +591,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     };
 
     draw_scheduler.EndRendering();
-    const auto cmdbuf = draw_scheduler.CommandBuffer();
+    auto cmdbuf = draw_scheduler.CommandBuffer();
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &pre_barrier,
@@ -648,6 +651,42 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
+    // gow3: stereo 3D (in-game menu, GOW3_STEREO): the picture and its scene depth become a
+    // side-by-side pair.
+    auto stereo_settings = HostPasses::StereoPass::Current();
+    // gow3: LeiaSR (3D output "LeiaSR display"): both eyes at full width, woven by
+    // gow3_leiasr.dll for the window's place on the display and the viewer's eyes. Not in HDR
+    // (the shared images are 8-bit sRGB) and only with an 8-bit BGRA swapchain like them.
+    const bool leiasr_wanted = stereo_settings.enable && stereo_settings.leiasr && !upscaled &&
+                               !frame->is_hdr &&
+                               swapchain.GetSurfaceFormat().format == vk::Format::eB8G8R8A8Unorm;
+    const bool weaving = leiasr->Update(leiasr_wanted);
+    stereo_settings.full_width = weaving;
+    if (stereo_settings.enable && !upscaled) {
+        const auto scene = rasterizer->GetStereoDepth().Find(cpu_address);
+        static bool logged = false;
+        if (scene.view && !logged) {
+            logged = true;
+            std::printf("Stereo: scene depth %ux%u, picture %ux%u\n", scene.size.width,
+                        scene.size.height, image_size.width, image_size.height);
+        }
+        vk::ImageView scene_view{};
+        if (scene.scene) {
+            const auto device = instance.GetDevice();
+            scene_view = Check(device.createImageView({
+                .image = scene.scene,
+                .viewType = vk::ImageViewType::e2D,
+                .format = view_info.format,
+                .components = {vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
+                               vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eOne},
+                .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+            }));
+            draw_scheduler.DeferOperation([device, scene_view] { device.destroyImageView(scene_view); });
+        }
+        image_view = stereo_pass.Render(cmdbuf, image_view, image_size,
+                                        {scene.view, scene.size, scene_view}, stereo_settings);
+    }
+
     // gow3: FSR 1, RCAS and its strength come from the in-game menu, every frame.
     const auto& graphics = Gow3Settings::Get();
     fsr_settings.enable = graphics.fsr1;
@@ -661,8 +700,10 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         fsr_settings.use_rcas &&
         Gow3Graphics::FsrPassRuns(fsr_settings.enable, true, int(image_size.width), int(image_size.height),
                                   int(frame->width), int(frame->height));
-    image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
-                                 fsr_settings, frame->is_hdr);
+    if (!weaving) {
+        image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
+                                     fsr_settings, frame->is_hdr);
+    }
 
     // Vulkan has no sRGB variant of the 10-bit format, so an A2R10G10B10Srgb buffer reaches
     // the post process pass still sRGB encoded and has to be decoded there instead.
@@ -671,7 +712,69 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // gow3: black bars around a cutscene when the render resolution is not 16:9 (movie_bars.h).
     pp_settings.picture = MovieBars::Cutscenes().Bars(image_size.width, image_size.height,
                                                       MovieBars::NowMs());
-    pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
+    const vk::Extent2D views_size{image_size.width * 2, image_size.height};
+    if (weaving && leiasr->Prepare(cmdbuf, views_size.width, views_size.height, frame->width,
+                                   frame->height)) {
+        // Both eyes into the shared views image; Direct3D weaves once the GPU has finished.
+        const vk::ImageMemoryBarrier2 to_draw{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .image = leiasr->Views().image,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_draw});
+        pp_pass.Render(cmdbuf, image_view, views_size, leiasr->Views(), pp_settings);
+        draw_scheduler.Finish();
+        const bool woven = leiasr->Weave();
+        cmdbuf = draw_scheduler.CommandBuffer();
+        const vk::ImageSubresourceRange color{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+        const vk::ImageMemoryBarrier2 to_copy{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+            .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eTransferDstOptimal,
+            .image = frame->image,
+            .subresourceRange = color,
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_copy});
+        if (woven) {
+            const vk::ImageSubresourceLayers layers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+            cmdbuf.copyImage(leiasr->Output(), vk::ImageLayout::eGeneral, frame->image,
+                             vk::ImageLayout::eTransferDstOptimal,
+                             vk::ImageCopy{.srcSubresource = layers,
+                                           .dstSubresource = layers,
+                                           .extent = {frame->width, frame->height, 1}});
+        } else {
+            const vk::ClearColorValue black{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+            cmdbuf.clearColorImage(frame->image, vk::ImageLayout::eTransferDstOptimal, black, color);
+        }
+        // As the post-process pass leaves it: General, for the present blit.
+        const vk::ImageMemoryBarrier2 to_present{
+            .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = frame->image,
+            .subresourceRange = color,
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_present});
+        // The weave is for the window's pixels: the frame must cover the window one to one.
+        static bool warned = false;
+        const vk::Extent2D extent = swapchain.GetExtent();
+        if (!warned && extent.width && (extent.width != frame->width || extent.height != frame->height)) {
+            warned = true;
+            std::printf("LeiaSR: the frame (%ux%u) is not the window's size (%ux%u): the 3D will be "
+                        "wrong\n", frame->width, frame->height, extent.width, extent.height);
+        }
+    } else {
+        pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
+    }
     if (frame_dump) {
         // The presented image as the swapchain blit reads it (General after the pass).
         const vk::MemoryBarrier2 done{.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,

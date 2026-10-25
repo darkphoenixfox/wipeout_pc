@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// gow3: stereo 3D from one picture and its depth (vk_presenter.cpp, GOW3_STEREO). Writes the
+// left eye to the left half of the output and the right eye to the right half (half-width
+// side by side). Each eye moves the picture by half the screen parallax of every pixel:
+//   parallax = separation * (1 - nearness / convergence)
+// where nearness is 1 - depth (the depth itself when it is reversed): about near / z for a far
+// plane much farther than the near one, so it needs no camera matrices. The far distance gets
+// `separation` (behind the screen), `convergence` sits on the screen, nearer comes out.
+// The depth is the R32F copy taken when the scene was drawn (vk_stereo_depth.cpp). With the
+// picture taken before the HUD (flag 8), pixels the HUD changed stay where they are, on the
+// screen plane, and the scene around them moves from the copy without the HUD.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D color_tex;
+layout(binding = 1) uniform texture2D depth_tex;
+layout(binding = 2, rgba16f) uniform writeonly image2D out_img;
+layout(binding = 3) uniform sampler2D scene_tex;
+
+layout(push_constant) uniform Constants {
+    vec2 out_size;      // pixels, both eyes
+    vec2 in_size;       // pixels of the picture (half the output's width or all of it)
+    vec2 depth_size;    // pixels of the depth grid the picture is drawn on
+    float separation;   // parallax at infinity, fraction of one eye's width
+    float convergence;  // nearness on the screen plane
+    float max_popout;   // largest parallax in front of the screen, fraction of the width
+    uint flags;         // 1 reversed depth, 2 depth present, 4 show nearness (debug),
+                        // 8 scene picture without the HUD present, 16 swap eyes
+};
+
+float nearness(vec2 uv) {
+    const ivec2 pixel = clamp(ivec2(uv * depth_size), ivec2(0), ivec2(depth_size) - 1);
+    const float depth = texelFetch(depth_tex, pixel, 0).r;
+    return (flags & 1u) != 0u ? depth : 1.0 - depth;
+}
+
+float parallax(vec2 uv) {
+    return max(separation * (1.0 - nearness(uv) / convergence), -max_popout);
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(out_size.x) || pixel.y >= int(out_size.y)) {
+        return;
+    }
+    const float eye_width = out_size.x * 0.5;
+    const bool right = (float(pixel.x) >= eye_width) != ((flags & 16u) != 0u);
+    const bool right_half = float(pixel.x) >= eye_width;
+    const vec2 uv = vec2((float(pixel.x) - (right_half ? eye_width : 0.0) + 0.5) / eye_width,
+                         (float(pixel.y) + 0.5) / out_size.y);
+    const bool has_depth = (flags & 2u) != 0u;
+    if (has_depth && (flags & 4u) != 0u) {
+        const float shown = clamp(nearness(uv) / convergence * 0.5, 0.0, 1.0);
+        imageStore(out_img, pixel, vec4(vec3(shown), 1.0));
+        return;
+    }
+    // The pixel shown at uv comes from x with x -/+ parallax(x) / 2 = uv.x (left/right eye):
+    // a few fixed point steps find it.
+    vec2 source = uv;
+    if (has_depth) {
+        const float side = right ? -0.5 : 0.5;
+        for (int i = 0; i < 4; ++i) {
+            source.x = uv.x + side * parallax(source);
+        }
+    }
+    if ((flags & 8u) != 0u) {
+        const ivec2 here = clamp(ivec2(uv * in_size), ivec2(0), ivec2(in_size) - 1);
+        const vec3 shown = texelFetch(color_tex, here, 0).rgb;
+        const vec3 scene = texelFetch(scene_tex, here, 0).rgb;
+        if (any(greaterThan(abs(shown - scene), vec3(1.5 / 255.0)))) {
+            imageStore(out_img, pixel, vec4(shown, 1.0)); // HUD: on the screen plane
+            return;
+        }
+        imageStore(out_img, pixel, vec4(texture(scene_tex, source).rgb, 1.0));
+        return;
+    }
+    imageStore(out_img, pixel, vec4(texture(color_tex, source).rgb, 1.0));
+}

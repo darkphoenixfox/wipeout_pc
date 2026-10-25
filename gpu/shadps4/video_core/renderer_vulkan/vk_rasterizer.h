@@ -3,6 +3,10 @@
 
 #pragma once
 
+#include <array>
+#include <map>
+#include <unordered_map>
+
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -11,6 +15,7 @@
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
+#include "video_core/renderer_vulkan/vk_stereo_depth.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
 #include "video_core/renderer_vulkan/vk_draw_pipe.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
@@ -48,6 +53,11 @@ public:
 
     [[nodiscard]] TemporalUpscaler& GetUpscaler() noexcept {
         return *upscaler;
+    }
+
+    /// GOW3_STEREO: copies of the scene depth of each display buffer.
+    [[nodiscard]] const StereoDepth& GetStereoDepth() const noexcept {
+        return *stereo_depth;
     }
 
     [[nodiscard]] VideoCore::TextureCache& GetTextureCache() noexcept {
@@ -339,9 +349,23 @@ private:
     std::unique_ptr<TemporalUpscaler> upscaler; // gow3: FSR (docs/upscaler.md)
     std::array<float, 2> draw_jitter{};         ///< viewport offset of the current draw, pixels
     std::array<float, 2> target_scale{1.0f, 1.0f}; ///< pass drawn into the upscaler's output-size images
-    /// GOW3_HUD_16X9: a HUD draw's window x becomes x * [0] + [1] (16:9 in the middle of a wider buffer)
+    /// GOW3_HUD_16X9: a HUD draw's window x becomes x * [0] + [1] (GOW3_HUD_ASPECT in the middle of a
+    /// wider buffer)
     std::array<float, 2> hud_x{1.0f, 0.0f};
+    /// The same for y: across the full width of a taller buffer
+    std::array<float, 2> hud_y{1.0f, 0.0f};
     VAddr hud_buffer = 0;  ///< display buffer the HUD draws are counted in
+    /// GOW3_STEREO: the full-size depth written last (the scene's), copied for the next display
+    /// buffer the scene is drawn into.
+    struct SceneDepth {
+        VideoCore::ImageId id{};
+        u64 uid = 0;
+    };
+    SceneDepth stereo_scene_depth{};
+    VAddr stereo_buffer = 0;
+    u32 stereo_draws = 0; ///< draws into stereo_buffer; the first is the scene
+    std::unique_ptr<StereoDepth> stereo_depth;
+    std::map<VideoCore::ImageId, std::array<u32, 2>> stereo_debug_targets; ///< draws, writing
     u32 hud_draws = 0;     ///< draws into hud_buffer; the first one is the scene
     const bool host_markers_enabled;
     const bool guest_markers_enabled;

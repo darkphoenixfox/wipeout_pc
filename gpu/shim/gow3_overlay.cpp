@@ -416,6 +416,29 @@ void ImageTab() {
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
+    ImGui::SeparatorText("3D (side by side)");
+    if (BeginRows("##stereo")) {
+        CheckRow("3D side by side", s.stereo,
+                 "Left and right eye pictures side by side, from the scene's depth, for 3D displays "
+                 "and viewers that take side-by-side input. The HUD stays on the screen.");
+        ImGui::BeginDisabled(!s.stereo);
+        SliderRow("3D depth", s.stereo_depth, 0, 100, "%d",
+                  "How far the distance goes into the screen. 0 is flat.");
+        SliderRow("3D focus", s.stereo_focus, 1, 100, "%d",
+                  "What sits on the screen: higher brings the screen plane nearer, so more of the "
+                  "scene is behind it and less comes out.");
+        SliderRow("3D pop-out", s.stereo_popout, 0, 100, "%d",
+                  "The most that near objects (your ship) come out of the screen.");
+        CheckRow("Swap eyes", s.stereo_swap, "Right eye on the left: for cross-eyed viewing.");
+        static const char* const output_labels[] = {"Side by side", "LeiaSR display"};
+        ChoiceRow("3D output", s.stereo_output, output_labels, nullptr, 2,
+                  "Side by side: for displays that convert it to 3D. LeiaSR display: woven for a "
+                  "Samsung Odyssey 3D or Acer SpatialLabs with eye tracking, both eyes at full "
+                  "width (needs gow3_leiasr.dll and the SR Platform; the window must be on the "
+                  "3D display).");
+        ImGui::EndDisabled();
+        ImGui::EndTable();
+    }
     ImGui::SeparatorText("Textures (applied on restart)");
     if (BeginRows("##textures")) {
         static const char* const anisotropy_labels[] = {"Game default", "2x", "4x", "8x", "16x"};

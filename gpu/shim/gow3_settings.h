@@ -21,6 +21,13 @@ inline bool IsFsr4(int upscaler) {
 enum Preset : int { NativeAA = 0, Quality, Balanced, Performance, UltraPerformance, PresetCount };
 enum DebugView : int { DebugNone = 0, DebugReactive = 1, DebugMotion = 2, DebugViewCount };
 
+/// WipEout's HUD area (gow3.ini hud_aspect; run.py passes GOW3_HUD_ASPECT, the launcher sets it).
+inline constexpr const char* HudAspectKeys[] = {"16:9", "4:3", "16:10", "21:9", "32:9", "fill"};
+inline constexpr int HudAspectCount = 6;
+/// gow3.ini stereo_output: side by side, or woven for a LeiaSR display (gow3_leiasr.dll).
+inline constexpr const char* StereoOutputKeys[] = {"sbs", "leiasr"};
+inline constexpr int StereoOutputCount = 2;
+
 /// Live output resolutions: the upscaler's output and the UI host targets.
 inline constexpr int OutputWidths[] = {1280, 1920, 2560, 3840};
 inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
@@ -72,6 +79,18 @@ struct Values {
     /// Set by the presenter: the game's image and the window it is shown in, in pixels.
     std::atomic<int> image_width{0}, image_height{0}, window_width{0}, window_height{0};
     std::atomic<int> frames_queued{1};
+    /// Stereo 3D from the scene depth (host_passes/stereo_pass.h): a half-width side-by-side
+    /// pair for 3D displays. Live. depth: parallax of the far distance in tenths of a percent of
+    /// an eye's width; focus: the nearness (about near / distance) on the screen plane in
+    /// thousandths; popout: the most an object comes out, tenths of a percent; swap: right eye
+    /// on the left.
+    std::atomic<bool> stereo{false};
+    std::atomic<int> stereo_depth{30}, stereo_focus{20}, stereo_popout{20};
+    std::atomic<bool> stereo_swap{false};
+    /// StereoOutputKeys: the side-by-side picture, or woven for a LeiaSR display (vk_leiasr.h).
+    std::atomic<int> stereo_output{0};
+    /// HudAspectKeys index; only kept here so a save from the menu does not drop it.
+    std::atomic<int> hud_aspect{0};
     /// Controller vibration strength in percent; 0 turns it off (runtime_pad.c). Live.
     std::atomic<int> vibration{100};
     /// Mouse movement in px that counts as one step of a stick prompt (runtime_pad.c). Live.
