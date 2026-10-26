@@ -22,6 +22,14 @@
 
 extern Gow3ActorSlot gow3_actor_slots[2];
 extern "C" void runtime_restart(void); // src/probe.c: starts run.py again, ends this process
+extern "C" { // src/runtime_music.c: the custom soundtrack's songs
+int runtime_music_songs(void); // -1 while the music folder is read
+const char* runtime_music_song(int song);
+const char* runtime_music_folder(void);
+int runtime_music_playing(void);
+void runtime_music_play(int song);
+void runtime_music_step(int direction);
+}
 #include "common/elf_info.h"
 #include "imgui.h"
 #include "imgui_internal.h" // RegisterUserTexture (save pictures)
@@ -282,7 +290,9 @@ const char* UpscalerLabel(int upscaler) {
     case Gow3Settings::UpscalerFsr4: return "FSR 4";
     case Gow3Settings::UpscalerFsr411: return "FSR 4.1.1";
     case Gow3Settings::UpscalerTaa: return "TAA";
-    case Gow3Settings::UpscalerDlss: return "DLSS";
+    // At native size (DLSS quality 0, and before the first DLSS frame) it is DLAA: anti-aliasing,
+    // no upscaling.
+    case Gow3Settings::UpscalerDlss: return Gow3Settings::Get().dlss_quality > 0 ? "DLSS" : "DLAA";
     default: return "";
     }
 }
@@ -306,10 +316,21 @@ std::string OverlayText() {
 
 constexpr const char* Unsupported = "Unavailable: game version or code signature mismatch.";
 
+// gow3: the cheats, multipliers, enemy health bar and mouse aiming are God of War III's; a game
+// whose code has none of their hooks (WipEout) does not show them.
+bool GowHooks() {
+    const auto& s = Gow3Settings::Get();
+    return s.cheats_supported.load() || s.red_orbs_supported.load() || s.orb_pickup_supported.load() ||
+           s.damage_supported.load() || s.actor_watch_supported.load();
+}
+
 void GameTab() {
     auto& s = Gow3Settings::Get();
-    ImGui::SeparatorText("Cheats");
-    if (BeginRows("##cheats")) {
+    const bool gow = GowHooks();
+    if (gow) {
+        ImGui::SeparatorText("Cheats");
+    }
+    if (gow && BeginRows("##cheats")) {
         static const char* const names[] = {"Infinite health", "Infinite magic", "Infinite item meter",
                                             "Infinite Rage of Sparta", "Max red orbs",
                                             "Unlock Very Hard", "Infinite Double Jumps"};
@@ -332,18 +353,23 @@ void GameTab() {
     if (BeginRows("##controller")) {
         SliderRow("Vibration", s.vibration, 0, 100, "%d%%",
                   "Strength of the controller's vibration. 0% turns it off.");
-        SliderRow("Mouse prompt distance", s.mouse_prompt_distance, 16, 200, "%d px",
-                  "With Joystick prompts on Adaptive mouse: how far the mouse moves for one step of a rotation.");
-        static const char* const aim_styles[] = {"Relative", "Absolute"};
-        ChoiceRow("Right stick style", s.mouse_aim_style, aim_styles, nullptr, 2,
-                  "L2 aim with the mouse (Head of Helios, Bow of Apollo). Relative: the stick follows the "
-                  "movement and goes back to neutral when the mouse stops. Absolute: the stick points from "
-                  "where the mouse was when L2 was pressed to where it is.");
-        SliderRow("Right stick sensitivity", s.mouse_aim_sensitivity, 10, 200, "%d%%",
-                  "L2 aim with the mouse: lower needs more mouse movement for the same stick, higher less.");
+        if (gow) {
+            SliderRow("Mouse prompt distance", s.mouse_prompt_distance, 16, 200, "%d px",
+                      "With Joystick prompts on Adaptive mouse: how far the mouse moves for one step of a rotation.");
+            static const char* const aim_styles[] = {"Relative", "Absolute"};
+            ChoiceRow("Right stick style", s.mouse_aim_style, aim_styles, nullptr, 2,
+                      "L2 aim with the mouse (Head of Helios, Bow of Apollo). Relative: the stick follows the "
+                      "movement and goes back to neutral when the mouse stops. Absolute: the stick points from "
+                      "where the mouse was when L2 was pressed to where it is.");
+            SliderRow("Right stick sensitivity", s.mouse_aim_sensitivity, 10, 200, "%d%%",
+                      "L2 aim with the mouse: lower needs more mouse movement for the same stick, higher less.");
+        }
         CheckRow("Keep mouse in window", s.mouse_lock,
                  "While you play, the mouse stays in the game window; this menu and other windows get it back.");
         ImGui::EndTable();
+    }
+    if (!gow) {
+        return;
     }
 
     ImGui::SeparatorText("Multipliers");
@@ -572,8 +598,69 @@ void OverlayTab() {
         add(s.orb_pickup_supported.load(), "orb pickups");
         add(s.damage_supported.load(), "damage");
         add(s.actor_watch_supported.load(), "enemy health");
-        InfoRow("Game hooks", hooks.empty() ? "none" : hooks.c_str());
+        if (!hooks.empty()) {
+            InfoRow("Game hooks", hooks.c_str());
+        }
         ImGui::EndTable();
+    }
+}
+
+// The custom soundtrack: on/off, shuffle, skip, and the songs of the music folder (click one to play it).
+void MusicTab() {
+    auto& s = Gow3Settings::Get();
+    if (BeginRows("##music")) {
+        CheckRow("Play my music", s.music, "Your songs instead of the game's music. Off: the game's music.");
+        CheckRow("Shuffle", s.music_shuffle, "Random order. Off: the songs play in the order of the list.");
+        SliderRow("Music volume", s.music_volume, 0, 200, "%d%%",
+                  "100%: about as loud as the game's own music. Each song is leveled, so quiet and loud songs "
+                  "sound alike.");
+        ImGui::EndTable();
+    }
+    const int songs = runtime_music_songs();
+    ImGui::PushTextWrapPos(0.0f);
+    if (songs < 0) {
+        ImGui::TextDisabled("Reading the music folder...");
+    } else if (songs == 0) {
+        ImGui::TextDisabled("No songs yet. Put MP3, OGG, FLAC, WAV or M4A files in this folder, then restart "
+                            "the game (launcher: Music page):");
+        ImGui::TextUnformatted(runtime_music_folder());
+    }
+    ImGui::PopTextWrapPos();
+    if (songs <= 0) {
+        return;
+    }
+    const auto turn_on = [&] {
+        if (!s.music) {
+            s.music = true;
+            dirty = true;
+        }
+    };
+    const int playing = runtime_music_playing();
+    ImGui::Text("Now playing: %s", s.music && playing >= 0 ? runtime_music_song(playing) : "-");
+    if (ImGui::Button("Previous")) {
+        turn_on();
+        runtime_music_step(-1);
+    }
+    Help("The song before this one.");
+    ImGui::SameLine();
+    if (ImGui::Button("Next")) {
+        turn_on();
+        runtime_music_step(1);
+    }
+    Help("Skip to the next song.");
+    char title[48];
+    std::snprintf(title, sizeof(title), "Songs (%d)", songs);
+    ImGui::SeparatorText(title);
+    // In the tab's own scrolling area, not a child: the keyboard and gamepad move from the
+    // buttons into the list and back.
+    for (int song = 0; song < songs; ++song) {
+        ImGui::PushID(song);
+        if (ImGui::Selectable(runtime_music_song(song), s.music && song == playing)) {
+            turn_on();
+            runtime_music_play(song);
+        }
+        Help("Play this song.");
+        ImGui::PopID();
     }
 }
 
@@ -605,7 +692,7 @@ void Menu() {
         return;
     }
     footer_help = nullptr;
-    constexpr int TabCount = 4;
+    constexpr int TabCount = 5;
     const ImGuiIO& io = ImGui::GetIO();
     if (!io.WantTextInput) {
         const int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
@@ -618,7 +705,7 @@ void Menu() {
     }
     const float footer = ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetTextLineHeightWithSpacing() * 2.0f;
     if (ImGui::BeginTabBar("##tabs")) {
-        static const char* const tabs[TabCount] = {"Game", "Image", "Performance", "Overlay"};
+        static const char* const tabs[TabCount] = {"Game", "Image", "Performance", "Overlay", "Music"};
         for (int tab = 0; tab < TabCount; ++tab) {
             const ImGuiTabItemFlags flags = requested_tab == tab ? ImGuiTabItemFlags_SetSelected : 0;
             if (!ImGui::BeginTabItem(tabs[tab], nullptr, flags)) {
@@ -633,7 +720,8 @@ void Menu() {
                 case 0: GameTab(); break;
                 case 1: ImageTab(); break;
                 case 2: PerformanceTab(); break;
-                default: OverlayTab(); break;
+                case 3: OverlayTab(); break;
+                default: MusicTab(); break;
                 }
             }
             ImGui::EndChild();
@@ -649,7 +737,7 @@ void Menu() {
 
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("%s", footer_help ? footer_help : PadText("L1 / R1 or Q / E: switch tabs. Settings are saved in gow3.ini.", "LB / RB or Q / E: switch tabs. Settings are saved in gow3.ini.", "L / R or Q / E: switch tabs. Settings are saved in gow3.ini."));
+    ImGui::TextDisabled("%s", footer_help ? footer_help : PadText("L1 / R1 or Q / E: switch tabs. Changes are saved.", "LB / RB or Q / E: switch tabs. Changes are saved.", "L / R or Q / E: switch tabs. Changes are saved."));
     ImGui::PopTextWrapPos();
     if (const int changes = RestartChanges()) {
         ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%d change%s need%s a restart (unsaved progress is lost).",
@@ -1080,6 +1168,29 @@ bool HandleEvent(const SDL_Event& event) {
         }
         if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F11) {
             Vulkan::FrameCapture::Request();
+            return true;
+        }
+        // Debug A/B (launcher Advanced > Diagnostics, GOW3_UPSCALER_KEY=1): F10 cycles the temporal
+        // upscaler live, off -> FSR 3.1 -> DLSS (when its DLLs loaded and NGX reports DLSS) -> off.
+        // Only with a session started with an upscaler (GOW3_UPSCALER not none); the overlay's
+        // Upscaler line shows the current one.
+        // Off when the session has no upscaler at all (GOW3_UPSCALER=none, as TemporalUpscaler
+        // decides it): switching would only change the overlay's label.
+        static const bool upscaler_key = [] {
+            const char* env = std::getenv("GOW3_UPSCALER_KEY");
+            const char* upscaler = std::getenv("GOW3_UPSCALER");
+            return env && *env == '1' && !(upscaler && std::strcmp(upscaler, "none") == 0);
+        }();
+        if (down && !event.key.repeat && upscaler_key && event.key.key == SDLK_F10) {
+            auto& s = Gow3Settings::Get();
+            const int now = s.upscaler.load();
+            const int next = now == Gow3Settings::UpscalerOff ? Gow3Settings::UpscalerFsr3
+                             : now == Gow3Settings::UpscalerFsr3 && s.dlss_supported
+                                 ? Gow3Settings::UpscalerDlss
+                                 : Gow3Settings::UpscalerOff;
+            s.upscaler.store(next);
+            std::printf("Upscaler: %s (F10)\n", next == Gow3Settings::UpscalerOff ? "off"
+                                                                                  : UpscalerLabel(next));
             return true;
         }
         if (down && !event.key.repeat &&

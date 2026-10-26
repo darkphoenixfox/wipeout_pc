@@ -91,7 +91,7 @@ class ControlMapTest(unittest.TestCase):
         self.assertEqual(launcher.control_map({}, 'pad'), '')
 
     def test_only_changes_from_the_defaults_are_kept(self):
-        keys = {row[0]: launcher.default_input(row, 'key') for row in launcher.table_rows('key')}
+        keys = {row[0]: launcher.default_input(row, 'key') for row in launcher.CONTROLS}
         keys.update(cross='q', circle='LEFT SHIFT', square='  ')
         self.assertEqual(launcher.control_changes(keys, 'key'), {'cross': 'q'})
         pads = {b: p or '' for b, _k, p in launcher.CONTROLS}
@@ -163,52 +163,30 @@ class ControlMapTest(unittest.TestCase):
         controls = {'key': {'square': 'Mouse Left', 'cross': 'Q'}}
         self.assertEqual(launcher.control_values(controls, 'key'), {'square': 'Mouse Left', 'cross': 'Q'})
 
-    def test_keyboard_defaults_put_the_attacks_on_the_mouse(self):
-        pairs = dict(entry.split('=', 1) for entry in launcher.keyboard_map({}, rage=False).split(','))
+    def test_keyboard_defaults_put_square_and_triangle_on_the_mouse(self):
+        pairs = dict(entry.split('=', 1) for entry in launcher.keyboard_map({}).split(','))
         self.assertEqual((pairs['square'], pairs['triangle'], pairs['r2']), ('Mouse Left', 'Mouse Right', 'Mouse Forward'))
         for button, key, _pad in launcher.CONTROLS:  # written where the game's own key differs
             default = launcher.KEY_DEFAULTS.get(button, key)
             if default.casefold() != key.casefold():
                 self.assertEqual(pairs.pop(button), default)
-        self.assertEqual(pairs, {'grab': 'C', 'dodge': 'Mouse Back'})
-        self.assertIn('l3=None,r3=None,rage=Mouse Middle', launcher.keyboard_map({}))
+        self.assertEqual(pairs, {})
         controls = {'key': {'square': 'Wheel Up', 'cross': 'Q', 'triangle': 'E'}}
         self.assertIn('cross=Q,square=Wheel Up,triangle=E,', launcher.keyboard_map(controls))
-        values = {row[0]: launcher.default_input(row, 'key') for row in launcher.table_rows('key')}
+        values = {row[0]: launcher.default_input(row, 'key') for row in launcher.CONTROLS}
         self.assertEqual(launcher.control_changes(values, 'key'), {})
         values['square'] = 'E'
         self.assertEqual(launcher.control_changes(values, 'key'), {'square': 'E'})
 
-    def test_actions_belong_to_the_keyboard_table(self):
-        names = [row[0] for row in launcher.table_rows('key')]
-        self.assertEqual(names[names.index('r3') + 1], 'rage')
-        self.assertEqual(names[-2:], ['grab', 'dodge'])
-        self.assertNotIn('dodge', [row[0] for row in launcher.table_rows('pad')])
-        self.assertEqual(launcher.control_values({'key': {'dodge': 'V'}}, 'key'), {'dodge': 'V'})
-        self.assertIn('dodge=V', launcher.keyboard_map({'key': {'dodge': 'V'}}))
-        self.assertIn('grab=None', launcher.keyboard_map({'key': {'grab': 'None'}}))
-        self.assertTrue(launcher.APP_DEFAULTS['rage_one_input'])
+    def test_the_keyboard_table_has_only_the_ps4_buttons(self):
+        # God of War III's own actions (Rage of Sparta, grab, dodge) are gone: L3 and R3 keep their keys.
+        saved = {'key': {'rage': 'Mouse Middle', 'grab': 'C', 'dodge': 'V'}}
+        self.assertEqual(launcher.control_values(saved, 'key'), {})
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'controls': saved, 'rage_one_input': True})
+        self.assertNotIn('rage', env['GOW3_KEY_MAP'])
+        self.assertNotIn('l3=None', env['GOW3_KEY_MAP'])
+        self.assertNotIn('rage_one_input', launcher.APP_DEFAULTS)
         self.assertNotIn('native_input', launcher.APP_DEFAULTS)
-
-    def test_rage_switch_moves_l3_and_r3_to_one_input(self):
-        controls = {'key': {'l3': 'Z', 'r3': 'X', 'rage': 'Mouse Middle'}}
-        apart = launcher.keyboard_map(controls, rage=False)
-        self.assertIn('r3=X', apart)
-        self.assertNotIn('rage=', apart)
-        self.assertIn('l3=None,r3=None,rage=Mouse Middle', launcher.keyboard_map(controls))
-        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'controls': controls})
-        self.assertIn('l3=None,r3=None,rage=Mouse Middle', env['GOW3_KEY_MAP'])
-        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'controls': controls, 'rage_one_input': False})
-        self.assertIn('r3=X', env['GOW3_KEY_MAP'])
-
-    def test_stick_prompts_reach_the_game(self):
-        with mock.patch.dict(os.environ, {'GOW3_STICK_PROMPTS': 'mouse'}):  # left over from a shell
-            env = launcher.game_environment(dict(launcher.APP_DEFAULTS))
-        self.assertEqual(env['GOW3_STICK_PROMPTS'], 'keyboard')
-        mouse = launcher.game_environment({**launcher.APP_DEFAULTS, 'stick_prompts': 'mouse'})
-        self.assertEqual(mouse['GOW3_STICK_PROMPTS'], 'mouse')
-        odd = launcher.game_environment({**launcher.APP_DEFAULTS, 'stick_prompts': 'joystick'})
-        self.assertNotIn('GOW3_STICK_PROMPTS', odd)
 
     def test_saved_keyboard_binds_keep_their_layout(self):
         old = {'controls': {'key': {'cross': 'Q'}, 'pad': {'cross': 'b'}}, 'pad_style': 'xbox'}
@@ -218,7 +196,6 @@ class ControlMapTest(unittest.TestCase):
         for button, game_key, _pad in launcher.CONTROLS:  # the game's keys, not the new defaults
             if button != 'cross':
                 self.assertEqual(key[button], game_key)
-        self.assertEqual((key['rage'], key['grab'], key['dodge']), ('Mouse Middle', 'C', 'Mouse Back'))
         self.assertEqual(new['controls']['pad'], {'cross': 'b'})
         self.assertEqual(new['controls_layout'], launcher.CONTROLS_LAYOUT)
         self.assertEqual(launcher.migrate_controls(new), new)  # once
@@ -226,10 +203,7 @@ class ControlMapTest(unittest.TestCase):
         self.assertIn('cross=Q', game)
         self.assertNotIn('square=', game)  # still E, the game's own key
         apart = launcher.migrate_controls({'controls': {'key': {'cross': 'Q'}}, 'native_rage': False})
-        self.assertEqual(apart['controls']['key']['grab'], 'None')  # C stays R3's
-        self.assertFalse(apart['rage_one_input'])
-        taken = launcher.migrate_controls({'controls': {'key': {'cross': 'Mouse Back'}}})
-        self.assertEqual(taken['controls']['key']['dodge'], 'None')
+        self.assertNotIn('native_rage', apart)
 
     def test_native_translation_carries_over(self):
         old = {'controls': {'key': {'cross': 'Q'}, 'native': {'circle': 'Mouse Middle'}},
@@ -238,7 +212,7 @@ class ControlMapTest(unittest.TestCase):
         self.assertEqual(new['controls']['key'], {'circle': 'Mouse Middle'})
         self.assertNotIn('native', new['controls'])
         self.assertNotIn('native_input', new)
-        self.assertTrue(new['rage_one_input'])
+        self.assertNotIn('native_rage', new)
         unused = launcher.migrate_controls({'controls': {'native': {'circle': 'Mouse Middle'}}, 'native_input': False})
         self.assertEqual(unused['controls'], {})
 
@@ -276,33 +250,44 @@ class ControlMapTest(unittest.TestCase):
         self.assertEqual(launcher.game_environment({**settings, 'parallel_warmup': False})['GOW3_PARALLEL_WARMUP'], '0')
         self.assertEqual(launcher.game_environment({**settings, 'background_warmup': False})['GOW3_BACKGROUND_WARMUP'], '0')
 
-    def test_temporal_upscaler_stays_off_with_a_saved_2_1_8_switch(self):
-        # 2.1.8 showed the experimental switch; a player who turned it on must not keep it on now that it is hidden.
-        for saved in (True, False, None):
+    def test_cheats_join_the_patch_selection(self):
+        # Off by default; on, each cheat's patch joins the launcher's selection (or is the only extra name).
+        self.assertFalse(any(launcher.APP_DEFAULTS[key] for key, *_rest in launcher.CHEATS))
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'cheat_events': True, 'cheat_rank': True,
+                                         'cheat_ships': True})
+        self.assertEqual(env['GOW3_PATCHES'].split(';')[-3:],
+                         ['Cheat - Unlock all HD and Fury events', 'Cheat - Top rank in 2048',
+                          'Cheat - Unlock all ships'])
+        env = launcher.game_environment(dict(launcher.APP_DEFAULTS))
+        self.assertNotIn('Cheat - ', env.get('GOW3_PATCHES', ''))
+
+    def test_ps4_pro_switch_reaches_the_game(self):
+        # Off by default; the launcher's choice wins over a GOW3_NEO left in the user's environment.
+        self.assertFalse(launcher.APP_DEFAULTS['ps4_pro'])
+        for saved, value in ((True, '1'), (False, '0'), (None, '0')):
+            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'ps4_pro': saved})
+            self.assertEqual(env['GOW3_NEO'], value)
+
+    def test_anti_aliasing_switch_reaches_the_game(self):
+        # Graphics > Temporal anti-aliasing (off by default); run.py keeps the upscaler out unless it is on.
+        self.assertFalse(launcher.APP_DEFAULTS['experimental_upscaler'])
+        for saved, value in ((True, '1'), (False, '0'), (None, '0')):
             env = launcher.game_environment({**launcher.APP_DEFAULTS, 'experimental_upscaler': saved})
-            self.assertEqual(env['GOW3_EXPERIMENTAL_UPSCALER'], '0')
+            self.assertEqual(env['GOW3_EXPERIMENTAL_UPSCALER'], value)
 
     def test_glyph_style_is_off_by_default(self):
         self.assertEqual(launcher.APP_DEFAULTS['glyph_style'], 'off')
         self.assertNotIn('GOW3_GLYPH_STYLE', launcher.game_environment({**launcher.APP_DEFAULTS}))
 
-    def test_glyph_style_choices_reach_the_game(self):
-        for style in ('auto', 'xbox', 'nintendo', 'keyboard'):
-            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'glyph_style': style})
-            self.assertEqual(env['GOW3_GLYPH_STYLE'], style)
-
-    def test_unknown_glyph_style_is_off(self):
-        for style in ('playstation', 'XBOX', 7, None, ''):
-            env = launcher.game_environment({**launcher.APP_DEFAULTS, 'glyph_style': style})
-            self.assertNotIn('GOW3_GLYPH_STYLE', env)
-
-    def test_inherited_glyph_style_is_dropped_when_off(self):
+    def test_no_god_of_war_button_icons(self):
+        # They are drawn into God of War III's R_UI.WAD, which WipEout has not: a saved or inherited
+        # choice never reaches the game.
         from unittest import mock
 
         with mock.patch.dict(launcher.os.environ, {'GOW3_GLYPH_STYLE': 'xbox'}):
-            self.assertNotIn('GOW3_GLYPH_STYLE', launcher.game_environment({**launcher.APP_DEFAULTS}))
-            self.assertEqual(launcher.game_environment({**launcher.APP_DEFAULTS, 'glyph_style': 'nintendo'})
-                             ['GOW3_GLYPH_STYLE'], 'nintendo')
+            for style in ('auto', 'xbox', 'nintendo', 'keyboard', 'off'):
+                env = launcher.game_environment({**launcher.APP_DEFAULTS, 'glyph_style': style})
+                self.assertNotIn('GOW3_GLYPH_STYLE', env)
 
     def test_settings_keys_kept(self):
         for key in ('game_dir', 'user_dir', 'mods_dir', 'patches_dir', 'language', 'hdr',
@@ -744,11 +729,55 @@ class GameLanguageTest(unittest.TestCase):
         self.assertNotEqual(env.get('GOW3_READBACKS'), '2')
 
 
+class MusicTest(unittest.TestCase):
+    def test_songs_are_the_audio_files_in_the_games_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'Album').mkdir()
+            for name in ('b.MP3', 'Album/a.flac', 'cover.jpg', 'A_song.ogg'):
+                (root / name).write_bytes(b'')
+            self.assertEqual([p.relative_to(root).as_posix() for p in launcher.music_songs(root)],
+                             ['A_song.ogg', 'Album/a.flac', 'b.MP3'])
+        self.assertEqual(launcher.music_songs(Path(tmp) / 'gone'), [])
+
+    def test_the_music_folder_goes_to_the_game(self):
+        self.assertNotIn('GOW3_MUSIC_DIR', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'music_dir': 'D:/Music'})
+        self.assertEqual(env['GOW3_MUSIC_DIR'], 'D:/Music')
+
+
 class ReleaseVersionTest(unittest.TestCase):
     def test_first_wipeout_release(self):
-        self.assertEqual(launcher.VERSION, '0.2.7')
-        self.assertGreater(launcher.version_tuple('windows-v0.2.8'), launcher.version_tuple(launcher.VERSION))
-        self.assertGreater(launcher.version_tuple(launcher.VERSION), launcher.version_tuple('windows-v0.2.6'))
+        self.assertEqual(launcher.VERSION, '0.2.20')
+        self.assertGreater(launcher.version_tuple('windows-v0.2.21'), launcher.version_tuple(launcher.VERSION))
+        self.assertGreater(launcher.version_tuple(launcher.VERSION), launcher.version_tuple('windows-v0.2.19'))
+
+    def test_update_check_is_on_by_default(self):
+        # A new key: the old 'check_updates' was saved off in everyone's settings.
+        self.assertIs(launcher.APP_DEFAULTS['update_popup'], True)
+        self.assertNotIn('check_updates', launcher.APP_DEFAULTS)
+
+    def test_update_check_at_start_retries(self):
+        # Two network failures, then an answer: offered. Three failures: nothing, and no error box.
+        app = types.SimpleNamespace(ui_calls=queue.Queue())
+        for results, offered in (([OSError(), OSError(), ('9.9.9', 'u', 'p', '')], 1), ([OSError()] * 3, 0)):
+            answers = iter(results)
+
+            def release():
+                answer = next(answers)
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+            with mock.patch.object(launcher, 'latest_release', release), mock.patch.object(launcher.time, 'sleep'):
+                launcher.Launcher.check_update(app)
+            self.assertEqual(app.ui_calls.qsize(), offered)
+            while not app.ui_calls.empty():
+                app.ui_calls.get()
+
+    def test_whats_new_is_cut_from_the_release_note(self):
+        body = "## What's new\n\n**Pop-up.** Click `UPDATE NOW`.\n- one\n\n## All features\n\n- everything\n"
+        self.assertEqual(launcher.whats_new(body), 'Pop-up. Click UPDATE NOW.\n- one')
+        self.assertEqual(launcher.whats_new('Just a note.\n## Download\nzip'), 'Just a note.')
 
     def test_first_start_is_in_english(self):
         # The translations are partial; 'System' stays a choice in Advanced.

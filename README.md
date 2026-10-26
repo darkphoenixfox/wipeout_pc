@@ -80,12 +80,13 @@ Thanks to everyone who has played, tested and reported so far!
 | Game speed | Done: the game runs on real time at any frame rate |
 | Frame rate above 60 FPS | Done: up to 240 FPS, set by the frame rate limit (110–150 FPS in 2048 races on an RTX 4070 Laptop) |
 | Graphics: Metro Park terrain | Fixed (shader recompiler, #5) |
-| Render resolutions: native 1080p, 2560x1440, 3840x2160, 2560x1080, 3440x1440, 5120x2160 | Done: pick one in the launcher or the in-game **Render resolution** menu (Insert key) (`patches/WipEout_Omega_Collection.xml`, #2). 3840x2160 and 5120x2160 need more than 8 GB of video memory |
+| Render resolutions: native 1080p, 2560x1440, 3840x2160 (4K), 2560x1080, 3440x1440, 5120x2160 | Done: pick one in the launcher or the in-game **Render resolution** menu (Insert key) (`patches/WipEout_Omega_Collection.xml`, #2, #48). The HUD stays 16:9 in the middle of wider screens. 4K and 5120x2160 need a lot of video memory: HD races at 4K can run out on 8 GB |
 | More aspect ratios: 3840x1600 (21:9), 5120x1440 (32:9), 1440x1080, 1920x1440, 2048x1536, 2560x1920 (4:3) | Done: 5120x1440 and 4:3 played; 3840x1600 not tested yet. New sizes: `tools/make_wipeout_resolution_patch.py` |
 | HUD on other screen shapes | Done: **HUD shape** (launcher) sets the area the HUD and menus are drawn in |
 | 3D: side by side, LeiaSR displays | Done: played on a Samsung Odyssey 3D, side by side and woven (`host_shaders/stereo.comp`, `gpu/leiasr_bridge`). Not in HDR |
 | HDR | Done; the darker picture when RCAS runs is fixed, waiting for a test (#4) |
 | Sound: music and effects (Audio3d) | Done; the effects are new, please report anything that sounds wrong |
+| Your own music (custom soundtrack) | Done: see [Your own music](#your-own-music) (#47) |
 | Launcher and settings | Done (`launcher/gow3_launcher_win.py`) |
 | Windows package (zip) | Done (`packaging/windows/package.sh`, Actions > Windows zip) |
 | Linux | Builds from source; no package yet |
@@ -99,6 +100,22 @@ it on. Without it they run at less than 1 FPS.
 The game times itself with the processor's time stamp counter (`rdtsc`), so the runtime gives
 it the real counter and its measured frequency (`src/runtime_kernel.c`). Its speed then does
 not depend on the frame rate.
+
+## Your own music
+
+Play your own songs instead of the game's music, as on a PS4 playing your own music. The game's
+sound effects stay.
+
+1. In the launcher, open the **Music** page. Put your songs (MP3, OGG, FLAC, WAV, M4A, ...) in the
+   music folder: `user\music` next to `WipEout.exe`, or any folder you choose there. Subfolders
+   count too. The page lists the songs it finds.
+2. Click **PLAY**. Your songs play in menus and races, shuffled. The song name shows in the lower
+   right corner when a song starts.
+3. In the game, press Insert (or R3 + L2) and open the **Music** tab: pick a song, go to the
+   previous or next one, switch shuffle or your music off, and set the **Music volume**.
+
+Each song is leveled, so loud and quiet songs sound alike; Music volume 100% is about as loud as
+the game's own music. Without the launcher, `GOW3_MUSIC_DIR` points to another folder.
 
 ## Supported game versions
 

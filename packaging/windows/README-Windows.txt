@@ -27,10 +27,14 @@ Starting
 Settings
 - Frame rate: the game runs on real time, so it can go above 60 FPS (up to 240). The Frame
   rate limit on Home sets the cap.
-- Render resolution: 1920x1080 by default. 2560x1080 and 5120x2160 (21:9) are in the port's
-  in-game menu, under Performance, and apply on the next start. The other sizes in that list
-  come from the God of War III port and do nothing here yet. The HUD and menus stay 16:9 and
-  look stretched at 21:9.
+- Render resolution: 1920x1080 by default. 2560x1440, 3840x2160 (4K), 2560x1080, 3440x1440
+  and 5120x2160 are in the port's in-game menu, under Performance, and apply on the next start.
+  The HUD and menus stay 16:9 in the middle of wider screens. 4K and 5120x2160 need a lot of
+  video memory.
+- Your own music: the launcher's Music page shows the music folder (user\music, or one you
+  choose) and the songs in it: MP3, OGG, FLAC, WAV or M4A. They play instead of the game's
+  music. In the game, Insert (or R3 + L2) > Music picks a song, skips, switches shuffle and
+  your music off, and sets the music volume.
 - "Native 4K rendering (no checkerboard)" on the Game page is on by default: from 3840 pixels
   wide the game renders at full resolution instead of checkerboard.
 
@@ -44,8 +48,9 @@ While playing
 Next time
 - "Play WipEout.exe" starts the game straight away with the saved settings. Make a desktop
   shortcut to it (Advanced -> Desktop shortcut), or add it to Steam with "Add a Non-Steam Game".
-- Advanced -> Check for updates downloads and installs a new version. Saves and settings are
-  kept.
+- When a new version is out, the launcher shows a pop-up at start. Click UPDATE NOW: it downloads
+  and installs the new version, then opens again. Saves, settings, mods and music are kept.
+  Advanced -> Check for updates does the same check by hand.
 
 Data
 - Saves, shader cache and the log: user\ next to WipEout.exe (keep it when updating).
@@ -53,7 +58,7 @@ Data
 - Generated files (prepared game image, patches): out\.
 
 Known issues
-- PS4 Pro mode is not available yet.
+- PS4 Pro mode is experimental: Graphics -> PS4 Pro mode in the launcher.
 - Some event types and tracks have not been tested.
 
 Problems

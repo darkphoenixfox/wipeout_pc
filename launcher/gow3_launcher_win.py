@@ -61,7 +61,7 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 NEW_GROUP = {} if WINDOWS else {'start_new_session': True}
 UI_FONT, MONO_FONT, SERIF_FONT = 'Segoe UI', 'Consolas', 'Georgia'
 # This build; GitHub release tags are windows-v<VERSION>.
-VERSION = '0.2.7'
+VERSION = '0.2.20'
 RELEASES_API = 'https://api.github.com/repos/AbdelmoumenDeghbouche/wipeout_pc/releases/latest'
 RELEASES_PAGE = 'https://github.com/AbdelmoumenDeghbouche/wipeout_pc/releases/latest'
 UPDATE_DIR = Path(tempfile.gettempdir()) / 'gow3-update'
@@ -75,8 +75,8 @@ except ImportError:
     pass
 # Never copied over an installation by an update (the package does not hold them either).
 USER_FILES = ('user', 'out', 'mods', 'gow3.ini', 'mods.json', 'mods_presets.json', 'patches.json', 'last_run.log')
-# The title face (Cinzel Black), next to gow3.ico; main() registers it for this process only.
-FONT_FILE = PORT_DIR / 'launcher' / 'Cinzel-Black.ttf'
+# The title face (Russo One), next to gow3.ico; main() registers it for this process only.
+FONT_FILE = PORT_DIR / 'launcher' / 'RussoOne-Regular.ttf'
 FR_PRIVATE = 0x10
 
 
@@ -235,7 +235,7 @@ def pick_fonts(families):
     global UI_FONT, MONO_FONT, SERIF_FONT, FONT_LOADED
     available = set(families)
     # Registration can succeed in fontconfig even when Tk uses the X core font backend.
-    FONT_LOADED = FONT_LOADED and bool({'Cinzel Black', 'Cinzel'} & available)
+    FONT_LOADED = FONT_LOADED and 'Russo One' in available
     pick = lambda names: next((name for name in names if name in available), names[-1])
     UI_FONT = pick(('Segoe UI', 'Helvetica Neue', 'Noto Sans', 'DejaVu Sans', 'Helvetica'))
     MONO_FONT = pick(('Consolas', 'Menlo', 'Noto Sans Mono', 'DejaVu Sans Mono', 'Courier'))
@@ -373,7 +373,7 @@ def register_font(path):
         return False
 
 
-# The heading face (Cinzel Black, SIL OFL 1.1, launcher/OFL-Cinzel.txt) covers the Latin-script
+# The heading face (Russo One, SIL OFL 1.1, launcher/OFL-RussoOne.txt) covers the Latin-script
 # languages; the other scripts keep the launcher's usual families.
 LATIN_UI_LANGUAGES = ('en', 'es', 'pt', 'fr', 'de', 'it', 'pl', 'tr')
 
@@ -386,7 +386,7 @@ def heading_face(every_language=False):
 
 def heading_font(size, fallback=None, every_language=False):
     if heading_face(every_language):
-        return ('Cinzel Black', size)
+        return ('Russo One', size)
     return (fallback or SERIF_FONT, size)
 
 
@@ -396,9 +396,9 @@ def heading_font(size, fallback=None, every_language=False):
 
 INI_FLAGS = {'stereo', 'stereo_swap',
              'cheat_double_jumps', 'cheat_very_hard', 'object_motion', 'show_fps', 'vsync', 'async_shaders', 'deferred_readback',
-             'stale_readback'}
+             'stale_readback', 'music', 'music_shuffle'}
 # The graphics keys are also in the in-game menu (Insert / R3+L2); run.py reads the startup ones.
-INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1',
+INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1', 'dlss_preset': '0',
                 'object_motion': '1', 'show_fps': '1', 'output_res': '1920x1080',
                 'live_resolution': 'auto', 'display_mode': 'windowed', 'vsync': '1', 'fps_limit': '0',
                 'async_shaders': '1', 'deferred_readback': '1', 'stale_readback': '1',
@@ -407,23 +407,27 @@ INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1',
                 'stereo_output': 'sbs',
                 'frames_queued': '1', 'cheat_very_hard': '0', 'cheat_double_jumps': '0',
                 'anisotropy': '0', 'vibration': '100', 'mouse_prompt_distance': '48', 'mouse_lock': '1',
-                'mouse_aim_style': '0', 'mouse_aim_sensitivity': '100'}
+                'mouse_aim_style': '0', 'mouse_aim_sensitivity': '100', 'music': '1', 'music_shuffle': '1',
+                'music_volume': '100'}
 DISPLAY_MODES = [('windowed', ('Windowed',)), ('borderless', ('Borderless',)), ('fullscreen', ('Fullscreen',))]
 ANISOTROPY = [('0', ('Game default',)), ('2', ('2x',)), ('4', ('4x',)), ('8', ('8x',)), ('16', ('16x',))]
 FPS_LIMITS = [('30', ('30',)), ('60', ('60',)), ('100', ('100',)), ('120', ('120',)), ('240', ('240',)), ('0', ('Unlimited',))]
 # The sidebar's pages, top to bottom, and the methods that refresh a page's lists when it is shown.
-PAGES = ('home', 'graphics', 'performance', 'game', 'controls', 'mods', 'advanced')
-PAGE_REFRESH = {'home': ('refresh_status',), 'game': ('refresh_game_patches',), 'mods': ('refresh_lists',)}
+PAGES = ('home', 'graphics', 'performance', 'game', 'cheats', 'music', 'controls', 'mods', 'advanced')
+PAGE_REFRESH = {'home': ('refresh_status',), 'game': ('refresh_game_patches',), 'music': ('refresh_music',),
+                'mods': ('refresh_lists',)}
+# The custom soundtrack's file types, as src/runtime_music.c.
+MUSIC_TYPES = ('.mp3', '.ogg', '.oga', '.opus', '.flac', '.wav', '.m4a', '.aac', '.wma')
 UI_SCALES = [('auto', ('Auto',)), ('1', ('1x',)), ('2', ('2x',))]
-APP_DEFAULTS = {'ui_language': 'en', 'ui_scale': 'auto', 'game_dir': os.environ.get('GOW3_GAME_DIR', str(PORT_DIR.parent / 'CUSA07671') if WINDOWS else ''), 'update_dir': '', 'experimental_upscaler': False,
+APP_DEFAULTS = {'ui_language': 'en', 'ui_scale': 'auto', 'game_dir': os.environ.get('GOW3_GAME_DIR', str(PORT_DIR.parent / 'CUSA07671') if WINDOWS else ''), 'update_dir': '', 'experimental_upscaler': False, 'ps4_pro': False, 'cheat_events': False, 'cheat_rank': False, 'cheat_ships': False,
                 'video_backend': 'auto', 'gamemode': False, 'mangohud': False, 'desktop_integration': True, 'user_dir': '',
-                'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
+                'music_dir': '', 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
                 'hdr': False, 'draw_pipe': '', 'readbacks': '', 'no_msaa': '', 'stream_memory': 'cached',
                 'gpu_id': '', 'partial_height_views': True, 'background_warmup': True, 'parallel_warmup': True, 'pipeline_binary_cache': True,
-                'perf_diag': False, 'frame_capture_key': False, 'frame_stats': False, 'gpu_profile': False,
+                'perf_diag': False, 'frame_capture_key': False, 'upscaler_key': False, 'frame_stats': False, 'gpu_profile': False,
                 'vk_validation': False, 'close_on_play': False, 'discord_rpc': False,
-                'check_updates': False, 'game_patches': {}, 'controls': {}, 'pad_style': 'playstation',
-                'rage_one_input': True, 'stick_prompts': 'keyboard', 'controls_layout': 2,
+                'update_popup': True, 'game_patches': {}, 'controls': {}, 'pad_style': 'playstation',
+                'controls_layout': 2,
                 'glyph_style': 'off'}
 
 # PS4 button, default key, default gamepad button (SDL names; src/runtime_pad.c). L2/R2 come
@@ -484,12 +488,6 @@ def connected_gamepad():
     return 'Gamepad: type=' in out
 
 
-# Keyboard & mouse: how the game's stick-rotation prompts (QTEs) are answered (runtime_pad.c).
-STICK_PROMPTS = [('keyboard', ('Keyboard (native)',)), ('mouse', ('Adaptive mouse (experimental)',))]
-# L2 aim with the mouse (Head of Helios, Bow of Apollo): gow3.ini mouse_aim_style.
-AIM_STYLES = [('0', ('Relative',)), ('1', ('Absolute',))]
-GLYPH_STYLES = [('off', ('Original (default)',)), ('auto', ('Match my controller',)), ('xbox', ('Xbox',)),
-                ('nintendo', ('Nintendo',)), ('keyboard', ('Keyboard',))]
 
 
 # Keyboard capture on the Controls page: the Tk keysym of a pressed key and the SDL scancode
@@ -554,34 +552,15 @@ def bind_key(bindings, button, name):
     return other
 
 
-# The keyboard & mouse table: keys and mouse inputs for the PS4 buttons plus actions of their own.
-# Its defaults put the attacks and magic on the mouse, the shoulder buttons next to WASD and the
-# weapons on 1-4 (clockwise from up, the order they are acquired); CONTROLS keeps the game's own
-# keys (src/runtime_pad.c), so only what differs from them is sent.
+# The keyboard & mouse table: keys and mouse inputs for the PS4 buttons. Its defaults put Square and
+# Triangle on the mouse, the shoulder buttons next to WASD and the D-pad on 1-4; CONTROLS keeps the
+# game's own keys (src/runtime_pad.c), so only what differs from them is sent.
 KEY_DEFAULTS = {'cross': 'Space', 'circle': 'Left Shift', 'square': 'Mouse Left', 'triangle': 'Mouse Right',
                 'l1': 'Q', 'r1': 'E', 'l2': 'R', 'r2': 'Mouse Forward', 'l3': 'Z', 'r3': 'X',
                 'options': 'Tab', 'touchpad_left': 'P', 'touchpad_right': 'Escape',
                 'up': '1', 'right': '2', 'down': '3', 'left': '4'}
-# Actions of the keyboard map only (runtime_pad.c's host-only sources), as CONTROLS rows. Rage of
-# Sparta (L3 + R3 on one input) follows R3; it is used instead of L3 and R3 while 'rage_one_input'
-# is on. "None" leaves a row without an input.
-RAGE_ROW, GRAB_ROW, DODGE_ROW = ('rage', 'Mouse Middle', None), ('grab', 'C', None), ('dodge', 'Mouse Back', None)
-KEY_ACTIONS = [RAGE_ROW, GRAB_ROW, DODGE_ROW]
-ACTION_NAMES = {'rage': 'Rage of Sparta', 'grab': 'Grab', 'dodge': 'Dodge'}
-RAGE_BUTTONS = ('l3', 'r3')
 CONTROLS_LAYOUT = 2  # settings layout: 2 = one keyboard & mouse table (migrate_controls)
 
-
-def table_rows(kind):
-    """CONTROLS rows of a table, in display order; the keyboard one adds its actions."""
-    if kind != 'key':
-        return CONTROLS
-    rows = []
-    for row in CONTROLS:
-        rows.append(row)
-        if row[0] == 'r3':
-            rows.append(RAGE_ROW)
-    return rows + [GRAB_ROW, DODGE_ROW]
 MOUSE_NAMES = {name.casefold() for name in (*TK_TO_MOUSE.values(), 'Wheel Up', 'Wheel Down')}
 
 
@@ -597,29 +576,24 @@ def default_input(row, kind):
     return KEY_DEFAULTS.get(button, key) if key else key
 
 
-def keyboard_map(controls, rage=True):
+def keyboard_map(controls):
     """GOW3_KEY_MAP of the keyboard & mouse table: each button on its chosen input, written where
-    that differs from the game's own key. With `rage` (one input for Rage of Sparta) L3 and R3 get
-    none and the Rage row is used; otherwise the Rage row is left out."""
+    that differs from the game's own key."""
     chosen = control_values(controls, 'key')
     entries = []
-    for row in table_rows('key'):
+    for row in CONTROLS:
         button, key, _pad = row
-        if not key or (button == 'rage' and not rage):
-            continue
-        if rage and button in RAGE_BUTTONS:
-            entries.append(f'{button}=None')
+        if not key:
             continue
         value = (chosen.get(button) or default_input(row, 'key')).strip()
-        game_default = key if row in CONTROLS else ''  # the game has no key of its own for an action
-        if value.casefold() != game_default.casefold() and not set(value) & set(',='):
+        if value.casefold() != key.casefold() and not set(value) & set(',='):
             entries.append(f'{button}={value}')
     return ','.join(entries)
 
 
 def control_changes(values, kind):
     """The buttons whose chosen key or SDL gamepad name differs from the default."""
-    return {row[0]: values[row[0]].strip() for row in table_rows(kind)
+    return {row[0]: values[row[0]].strip() for row in CONTROLS
             if default_input(row, kind) and values.get(row[0], '').strip()
             and values[row[0]].strip().casefold() != default_input(row, kind).casefold()}
 
@@ -633,7 +607,7 @@ def control_values(controls, kind):
     values = {button: value for button, value in chosen.items() if button != 'touchpad'}
     if 'touchpad' in chosen and 'touchpad_left' not in values:
         values['touchpad_left'] = chosen['touchpad']
-    return {button: values[button] for button, key, pad in table_rows(kind)
+    return {button: values[button] for button, key, pad in CONTROLS
             if (pad if kind == 'pad' else key) and isinstance(values.get(button), str) and values[button].strip()}
 
 
@@ -647,8 +621,7 @@ def control_map(controls, kind):
 def migrate_controls(saved):
     """Settings saved before the keyboard & mouse table (CONTROLS_LAYOUT). A player who saved keys
     in Keyboard Mapping keeps the whole layout they had (the game's keys for the rest); one who
-    used Native Translation keeps that table. A new action whose default input is already taken
-    stays without one."""
+    used Native Translation keeps that table."""
     if not isinstance(saved, dict) or not saved or saved.get('controls_layout') == CONTROLS_LAYOUT:
         return saved
     saved = dict(saved)
@@ -658,15 +631,8 @@ def migrate_controls(saved):
         controls['key'] = dict(native)  # its defaults are the new ones
     elif controls.get('key'):
         kept = control_values(controls, 'key')
-        layout = {button: kept.get(button) or key for button, key, _pad in CONTROLS if key}
-        rage = saved.get('native_rage', True)
-        taken = {value.strip().casefold() for button, value in layout.items()
-                 if not (rage and button in RAGE_BUTTONS)}
-        for button, default, _pad in KEY_ACTIONS:
-            layout[button] = 'None' if default.casefold() in taken else default
-        controls['key'] = layout
-    if 'native_rage' in saved:
-        saved['rage_one_input'] = saved.pop('native_rage')
+        controls['key'] = {button: kept.get(button) or key for button, key, _pad in CONTROLS if key}
+    saved.pop('native_rage', None)
     saved['controls'] = controls
     saved['controls_layout'] = CONTROLS_LAYOUT
     return saved
@@ -674,6 +640,13 @@ def migrate_controls(saved):
 UPSCALERS = [('fsr3', ('FSR 3.1 (every GPU)', 'FSR 3.1 (любая видеокарта)')),
              ('taa', ('TAA (native resolution anti-aliasing)', 'TAA (нативное сглаживание)')),
              ('off', ('Off', 'Выключен'))]
+# WipEout's anti-aliasing (Graphics page): native size only, fed by the game's own motion vectors.
+# TAA reprojects with God of War III's camera and is left out.
+AA_CHOICES = [('off', ('Off',)), ('fsr3', ('FSR 3.1 (every GPU)',))]
+DLSS_CHOICE = ('dlss', ('DLAA (NVIDIA RTX)',))
+DLSS_PRESETS = [('0', ('Driver default (K)',)), ('11', ('K (transformer)',)),
+                ('13', ('M (transformer 2, DLSS 4.5)',)), ('12', ('L (transformer 2, cleanest, slowest)',)),
+                ('10', ('J (less ghosting, more flicker)',))]
 PRESETS = [('0', ('Native AA (×1.0)',)), ('1', ('Quality (×1.5)',)), ('2', ('Balanced (×1.7)',)),
            ('3', ('Performance (×2)',)), ('4', ('Ultra Performance (×3)',))]
 OUTPUTS = [('1280x720', ('1280 × 720 (Steam Deck)',)), ('1920x1080', ('1920 × 1080',)),
@@ -692,6 +665,16 @@ LANGUAGES = [('18', ('English', 'Английский'), 1 | 4 | 8), ('1', ('Eng
              ('15', ('Norwegian',), 1), ('16', ('Polish',), 1), ('19', ('Turkish',), 1),
              ('0', ('Japanese', 'Японский'), 4), ('9', ('Korean',), 8), ('10', ('Chinese (Traditional)',), 8),
              ('11', ('Chinese (Simplified)',), 16)]
+
+
+def music_songs(folder):
+    """The songs the game plays from `folder` (subfolders too), in the order of its Music tab."""
+    folder = Path(folder)
+    try:
+        found = [p for p in folder.rglob('*') if p.suffix.lower() in MUSIC_TYPES and p.is_file()]
+    except OSError:
+        return []
+    return sorted(found, key=lambda p: p.relative_to(folder).as_posix().lower())
 
 
 def game_languages(folder):
@@ -719,6 +702,17 @@ STREAM_MEMORY = [('cached', ('System RAM (cached, default)',)),
                  ('host', ('System RAM (uncached)',)),
                  ('device', ('GPU memory (previous behavior)',))]
 FRAMES_QUEUED = [('1', ('1 (lowest latency)',)), ('2', ('2',)), ('0', ('Unlimited',))]
+# The Cheats page: (setting, patch in the game's patch file, title, hint).
+CHEATS = (('cheat_events', 'Cheat - Unlock all HD and Fury events', 'Unlock all HD and HD Fury events',
+           ('Every event of the HD and HD Fury campaigns is open; the campaign screen shows 99998 points. '
+            'Off: the events need your own points again.')),
+          ('cheat_rank', 'Cheat - Top rank in 2048', 'Top rank in 2048 (rank 50)',
+           ('Your 2048 rank shows 50, so what needs a rank is open. Your real experience points stay in your '
+            'save. Off: your own rank comes back.')),
+          ('cheat_ships', 'Cheat - Unlock all ships', 'Unlock all ships (HD, HD Fury and 2048)',
+           ('Every ship and livery is open: the ones that need medals, team loyalty, play time or a campaign '
+            'grid, and the 2048 ships that need a rank, a 2048 event or a prototype challenge. Not the VR '
+            'versions, nor the Tigron and Van-Uber DLC teams. Off: they need your own progress again.')))
 UI_LANGUAGES = gow3_lang.LANGUAGE_NAMES
 
 def fsr4_folder():
@@ -1101,13 +1095,20 @@ def game_profile_of(folder):
     return title_id, game_profile_for(folder)
 
 
+def dlss_installed():
+    """Whether the DLSS bridge and NVIDIA's runtime sit next to gow3-probe (packaged bin/ or a build's
+    out/). Whether the GPU can run DLSS is only known in the game; without it the game uses FSR 3.1."""
+    return WINDOWS and any((d / 'gow3_dlss.dll').is_file() and (d / 'nvngx_dlss.dll').is_file()
+                           for d in (PORT_DIR / 'bin', PORT_DIR / 'out'))
+
+
 def game_environment(s):
     env = dict(os.environ)
     env['GOW3_GAME_DIR'] = s['game_dir']
     env.pop('GOW3_PATCH_DIR', None)
-    # Temporal upscaling is parked (build_graphics): a switch saved on by 2.1.8 has no control left to
-    # turn it off, so it is ignored until the upscaler section comes back.
-    env['GOW3_EXPERIMENTAL_UPSCALER'] = '0'
+    # The Graphics page's anti-aliasing switch (build_graphics); off, run.py keeps the upscaler out.
+    env['GOW3_EXPERIMENTAL_UPSCALER'] = '1' if s.get('experimental_upscaler') else '0'
+    env['GOW3_NEO'] = '1' if s.get('ps4_pro') else '0'  # the game asks sceKernelIsNeoMode
     if s.get('update_dir'):
         env['GOW3_PATCH_DIR'] = s['update_dir']
     if not WINDOWS:
@@ -1122,8 +1123,14 @@ def game_environment(s):
     if profile and chosen is not None:
         env['GOW3_PATCHES'] = ';'.join(chosen)
         env['GOW3_PATCHES_ONLY'] = '1'
+    # The Cheats page: its patches join the selection (patches/WipEout_Omega_Collection.xml).
+    if cheats := [patch for key, patch, _t, _h in CHEATS if s.get(key)]:
+        env['GOW3_PATCHES'] = ';'.join([n for n in env.get('GOW3_PATCHES', '').split(';') if n] + cheats)
     if s['user_dir']:
         env['GOW3_USER_DIR'] = s['user_dir']
+    env.pop('GOW3_MUSIC_DIR', None)
+    if s.get('music_dir'):
+        env['GOW3_MUSIC_DIR'] = s['music_dir']
     if not WINDOWS:
         env['GOW3_FSR4_DIR'] = str(fsr4_folder())
     env['GOW3_MODS_DIR'] = s['mods_dir'] or str(DATA_DIR / 'mods')
@@ -1152,21 +1159,16 @@ def game_environment(s):
     env['GOW3_PERF_DIAG'] = '1' if s.get('perf_diag', False) else '0'
     env['GOW3_PARTIAL_HEIGHT_VIEWS'] = '1' if s.get('partial_height_views', True) else '0'
     for key, name in (('frame_stats', 'GOW3_FRAME_STATS'), ('gpu_profile', 'GOW3_GPU_PROFILE'),
-                      ('vk_validation', 'GOW3_VK_VALIDATION'), ('frame_capture_key', 'GOW3_FRAME_CAPTURE_KEY')):
+                      ('vk_validation', 'GOW3_VK_VALIDATION'), ('frame_capture_key', 'GOW3_FRAME_CAPTURE_KEY'),
+                      ('upscaler_key', 'GOW3_UPSCALER_KEY')):
         if s[key]:
             env[name] = '1'
     controls = s.get('controls', {})
-    if value := keyboard_map(controls, bool(s.get('rage_one_input', True))):
+    if value := keyboard_map(controls):
         env['GOW3_KEY_MAP'] = value
     if value := control_map(controls, 'pad'):
         env['GOW3_PAD_MAP'] = value
-    env.pop('GOW3_STICK_PROMPTS', None)
-    if s.get('stick_prompts') in dict(STICK_PROMPTS):
-        env['GOW3_STICK_PROMPTS'] = s['stick_prompts']
-    glyph_style = s.get('glyph_style')
-    env.pop('GOW3_GLYPH_STYLE', None)
-    if glyph_style in ('auto', 'xbox', 'nintendo', 'keyboard'):
-        env['GOW3_GLYPH_STYLE'] = glyph_style
+    env.pop('GOW3_GLYPH_STYLE', None)  # God of War III's button icons (R_UI.WAD): WipEout has none
     env['PYTHONUNBUFFERED'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     return env
@@ -1238,7 +1240,8 @@ class Launcher:
         self.mod_order, self.mod_vars, self.patch_vars = [], {}, {}
         self.selected_mod, self.mod_rows, self.mod_conflicts, self.conflicts_open = None, {}, [], False
         self.mod_details_shown, self.mod_picture_key, self.mod_photo = False, None, None
-        self.pending_update = None  # (version, url, page) once offered
+        self.pending_update = None  # (version, url, page, notes) once offered
+        self.update_window, self.update_parts, self.update_popped = None, None, False
         root.title(f'{APP_NAME} (PC)')
         if sys.platform == 'win32':
             try:  # the taskbar shows this window's icon, not Python's
@@ -1263,7 +1266,7 @@ class Launcher:
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self.drain_output)
         root.after(500, self.watch_changes)
-        if WINDOWS and self.app.get('check_updates', True):
+        if WINDOWS and self.app['update_popup']:
             threading.Thread(target=self.check_update, daemon=True).start()
 
     def meta_dir(self):
@@ -1508,6 +1511,21 @@ class Launcher:
             resolution.trace_add('write', resolution_chosen)
         return self.aspect
 
+    def game_resolution_options(self):
+        """The render resolutions with a patch for the chosen game (its profile's
+        GOW3_ALLOWED_RESOLUTIONS), else all built-in ones."""
+        import game_profiles
+        from patches import game_title_id
+        folder = self.var('game_dir', 'app').get()
+        title_id = game_title_id(folder) if folder else None
+        allowed = game_profiles.PROFILES.get(title_id, {}).get('env', {}).get('GOW3_ALLOWED_RESOLUTIONS')
+        if not allowed:
+            return RESOLUTION_CHOICES
+        names = allowed.split(';')
+        return [(n, t) for n, t in RESOLUTION_CHOICES if n in names] + \
+            [(n, (graphics_options.resolution_label(n),)) for n in names
+             if n not in dict(RESOLUTION_CHOICES)]
+
     def aspect_options(self):
         """The aspect ratios the render resolutions have (built-in and mods)."""
         return [(a, (a,)) for a in graphics_options.aspects([v for v, _t in self.resolution_options()])]
@@ -1549,6 +1567,20 @@ class Launcher:
     def note(self, parent, text, top=12):
         self.ttk.Label(parent, text=text, style='Muted.TLabel', wraplength=self.px(680), justify='left').grid(
             row=self.next_row(parent), column=0, columnspan=2, sticky='w', pady=self.px((top, 0)))
+
+    def slider(self, parent, key, low, high, unit):
+        """A gow3.ini number on a slider, with its value beside it."""
+        holder = self.ttk.Frame(parent)
+        amount = self.var(key, 'ini')
+        self.tk.Scale(holder, from_=low, to=high, orient='horizontal', variable=amount, showvalue=False,
+                      length=self.px(260), width=self.px(12), sliderlength=self.px(18), bg=ACCENT, troughcolor=CARD,
+                      activebackground=ACCENT_HI, highlightthickness=0, bd=0, sliderrelief='flat').pack(side='left')
+        value = self.ttk.Label(holder, width=7)
+        value.pack(side='left', padx=self.px(10))
+        show = lambda *_a: value.configure(text=f'{amount.get()}{unit}')
+        amount.trace_add('write', show)
+        show()
+        return holder
 
     def section(self, parent, title, top=20):
         """A section heading with a line under it."""
@@ -1615,7 +1647,7 @@ class Launcher:
         self.side = side
         self.nav, self.current_page = {}, None
         titles = {'home': _('Home'), 'graphics': _('Graphics', 'Графика'), 'performance': _('Performance'),
-                  'game': _('Game', 'Игра'), 'controls': _('Controls', 'Управление'), 'mods': _('Mods', 'Моды'), 'advanced': _('Advanced', 'Дополнительно')}
+                  'game': _('Game', 'Игра'), 'cheats': _('Cheats'), 'music': _('Music'), 'controls': _('Controls', 'Управление'), 'mods': _('Mods', 'Моды'), 'advanced': _('Advanced', 'Дополнительно')}
         for name in PAGES:
             item = tk.Label(side, text='    ' + titles[name], bg=BG, fg=TEXT, anchor='w',
                             font=self.heading_font(11, UI_FONT),
@@ -1652,6 +1684,8 @@ class Launcher:
         self.build_graphics()
         self.build_performance()
         self.build_game()
+        self.build_cheats()
+        self.build_music_page()
         self.build_controls()
         self.build_mods_page()
         self.build_advanced()
@@ -1665,7 +1699,7 @@ class Launcher:
         if self.capture_wheel:
             return self.capture_wheel(event)
         page = self.pages.get(self.current_page)
-        if hasattr(page, 'scroll') and not isinstance(event.widget, (self.tk.Text, self.ttk.Combobox)) \
+        if hasattr(page, 'scroll') and not isinstance(event.widget, (self.tk.Text, self.tk.Listbox, self.ttk.Combobox)) \
                 and 'popdown' not in str(event.widget):
             page.scroll({4: -1, 5: 1}.get(event.num) or int(-event.delta / 120))
 
@@ -1754,9 +1788,41 @@ class Launcher:
             return self.banner_image.subsample(factor) if factor > 1 else self.banner_image
 
     def build_graphics(self):
-        """Window and overlay controls; temporal upscaling stays commented out."""
+        """Window and overlay controls, render resolution and WipEout's anti-aliasing; God of War III's
+        upscaler presets stay commented out."""
         f = self.scrolled_page('graphics', _('Graphics', 'Графика'), _('How the game appears on your screen.'))
         self.build_display(f)
+        self.section(f, _('Resolution'))
+        self.row(f, _('Render resolution'), self.choice(f, 'render_resolution', 'ini', self.game_resolution_options()),
+                 _('Sizes with a resolution patch for this game. Wider than 16:9 keeps the HUD at 16:9.'),
+                 restart=True)
+        self.check(f, 'ps4_pro', 'app', _('PS4 Pro mode (experimental)'),
+                   _('The game runs as on a PS4 Pro, with its Pro graphics. Menus and a race start work; other events '
+                     'are not tested yet. Turn it off if something looks wrong.'), restart=True)
+        self.section(f, _('Anti-aliasing (experimental)'))
+        self.check(f, 'experimental_upscaler', 'app', _('Temporal anti-aliasing'),
+                   _('Off (default): the game\'s own image. On: FSR 3.1 or DLAA smooth edges at the render '
+                     'resolution (DLAA), from the game\'s own motion vectors. To compare them in the game: '
+                     'Advanced > Diagnostics > F10.'), restart=True)
+        dlss = dlss_installed()
+        self.row(f, _('Method'), self.choice(f, 'upscaler', 'ini', AA_CHOICES + ([DLSS_CHOICE] if dlss else [])),
+                 None if dlss else _('DLAA needs gow3_dlss.dll and nvngx_dlss.dll next to gow3-probe.exe.'),
+                 restart=True)
+        if dlss:
+            # Only DLAA has presets; FSR 3.1 at native size has none (its quality modes choose
+            # an upscaling ratio). The row (title, box, note) hides with another method.
+            first = self.next_row(f)
+            self.row(f, _('DLAA preset'), self.choice(f, 'dlss_preset', 'ini', DLSS_PRESETS),
+                     _('K is the driver\'s default for DLAA. M and L are the newer second-generation '
+                       'models; L costs a few percent more.'), restart=True)
+            preset_widgets = [w for r in range(first, self.next_row(f)) for w in f.grid_slaves(row=r)]
+            method = self.var('upscaler', 'ini')
+
+            def preset_visible(*_args):
+                for widget in preset_widgets:
+                    widget.grid() if method.get() == 'dlss' else widget.grid_remove()
+            method.trace_add('write', preset_visible)
+            preset_visible()
         # Temporal upscaling is parked until its image quality is validated.
         # self.section(f, _('Experimental'))
         # self.check(f, 'experimental_upscaler', 'app', _('Enable the upscaler (experimental)'),
@@ -1835,7 +1901,7 @@ class Launcher:
         f = self.scrolled_page('performance', _('Performance'), _('Frame rate and speed options.'))
         self.section(f, _('Frame rate', 'Частота кадров'), top=4)
         self.row(f, _('Frame rate limit'), self.choice(f, 'fps_limit', 'ini', FPS_LIMITS),
-                 _('The engine frame rate (below) is the highest it can go.'))
+                 _("Unlimited: up to 240 FPS. With VSync on, your monitor's refresh rate is the highest it goes."))
         self.row(f, _('Frames queued'), self.choice(f, 'frames_queued', 'ini', FRAMES_QUEUED),
                  _('1 is the lowest input latency; more can raise FPS when the graphics card is the limit.'))
         self.section(f, _('Shaders'))
@@ -1883,6 +1949,14 @@ class Launcher:
             box.current(index)
         card.trace_add('write', relabel)
 
+    def build_cheats(self):
+        """Cheats: game patches that open parts of the game while they are on (CHEATS)."""
+        f = self.scrolled_page('cheats', _('Cheats'), _('Open parts of the game without playing for them. Your saves keep your own progress.'))
+        self.section(f, _('Unlocks'), top=4)
+        for key, _patch, title, hint in CHEATS:
+            self.check(f, key, 'app', _(title), _(hint), restart=True)
+        self.note(f, _('Not yet: the 2049 and 2050 cups of 2048 (they open when you finish the cup before them).'))
+
     def build_game(self):
         f = self.scrolled_page('game', _('Game', 'Игра'), _('Your game dump, saves and the game patches.'))
         self.section(f, _('Folders'), top=4)
@@ -1910,6 +1984,51 @@ class Launcher:
 
     def user_dir(self):
         return Path(self.var('user_dir', 'app').get() or DATA_DIR / 'user')
+
+    def build_music_page(self):
+        """Your own music: a guide, the folder, the switches (gow3.ini, also in the in-game Music tab)
+        and the songs found."""
+        tk, ttk = self.tk, self.ttk
+        f = self.scrolled_page('music', _('Music'), _("Play your own songs in the game instead of its music."))
+        self.section(f, _('How it works'), top=4)
+        self.note(f, _("1. Put your songs in the music folder below: MP3, OGG, FLAC, WAV or M4A. Subfolders are fine.\n"
+                       "2. Click PLAY. Your songs play in menus and races instead of the game's music. The sound "
+                       "effects stay. Set how loud with Music volume below.\n"
+                       "3. In the game, press Insert (or R3 + L2) and open the Music tab: pick a song, skip to the "
+                       "next one or turn shuffle off."), top=8)
+        self.section(f, _('Settings'))
+        self.folder(f, 'music_dir', _('Music folder'), _('Choose your music folder'),
+                    _('Empty: the music folder next to your saves.'), on_change=self.refresh_music)
+        self.check(f, 'music', 'ini', _('Play my music'), _("Off: the game's own music, even with songs in the folder."))
+        self.check(f, 'music_shuffle', 'ini', _('Shuffle'), _('Off: the songs play in the order of the list below.'))
+        self.row(f, _('Music volume'), self.slider(f, 'music_volume', 0, 200, '%'),
+                 _("100%: about as loud as the game's own music. Each song is leveled, so quiet and loud songs "
+                   "sound alike."))
+        head = ttk.Frame(f)
+        head.grid(row=self.next_row(f), column=0, columnspan=2, sticky='we', pady=self.px((24, 0)))
+        ttk.Label(head, text=_('Songs').upper(), style='Section.TLabel').pack(side='left')
+        ttk.Button(head, text=_('Refresh', 'Обновить'), style='Link.TButton', command=self.refresh_music).pack(side='right')
+        tk.Frame(f, bg=LINE, height=self.px(1)).grid(row=self.next_row(f), column=0, columnspan=2, sticky='we',
+                                                     pady=self.px((2, 10)))
+        self.music_count = ttk.Label(f, text='', style='Muted.TLabel', wraplength=self.px(680), justify='left')
+        self.music_count.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w')
+        self.music_list = tk.Listbox(f, height=12, bg=CARD, fg=TEXT, borderwidth=0, highlightthickness=0,
+                                     activestyle='none', font=self.font(UI_FONT, 10))
+        self.music_list.grid(row=self.next_row(f), column=0, columnspan=2, sticky='we', pady=self.px((8, 0)))
+
+    def music_dir(self):
+        return Path(self.var('music_dir', 'app').get() or self.user_dir() / 'music')
+
+    def refresh_music(self):
+        if not hasattr(self, 'music_list'):
+            return
+        folder = self.music_dir()
+        songs = music_songs(folder)
+        self.music_list.delete(0, 'end')
+        for song in songs:
+            self.music_list.insert('end', song.stem.replace('_', ' '))
+        self.music_count.configure(text=_('{} songs in {}').format(len(songs), folder) if songs else
+                                   _('No songs yet in {}. Put your music there, then click Refresh.').format(folder))
 
     def build_save_backups(self, f):
         """run.py backs the saves up before every start; one of them can be restored here."""
@@ -1986,7 +2105,7 @@ class Launcher:
                        '{} · версия {} · {}.').format(title_id, version, xml.name), top=0)
         for meta in metas:
             name = meta.get('Name')
-            if name.startswith(EXCLUSIVE_PREFIX) or name.startswith('Frame Rate Patch') or name in ALWAYS_ON:
+            if name.startswith((EXCLUSIVE_PREFIX, 'Frame Rate Patch', 'Cheat - ')) or name in ALWAYS_ON:
                 continue
             var = tk.BooleanVar(value=name in on)
             self.game_patch_vars[name] = var
@@ -2064,7 +2183,6 @@ class Launcher:
         style = self.app.get('pad_style') if self.app.get('pad_style') in PAD_STYLES else 'playstation'
         self.pad_style = tk.StringVar(value=style)
         self.control_vars, self.pad_boxes, self.pad_icons = {'key': {}, 'pad': {}}, {}, {}
-        self.key_rows = {}  # keyboard button: (input box, reset arrow)
         self.capturing_key = self.capture_wheel = None  # the key box waiting for an input
         size = self.px(28)
         labels = pad_labels(style)
@@ -2083,32 +2201,12 @@ class Launcher:
             game_icon.grid(row=r, column=0, sticky='w', pady=self.px(3))
             if button in button_icons.GAME_BUTTONS:
                 button_icons.draw(game_icon, button_icons.GAME_BUTTONS[button], 'playstation', size)
-            elif button in ('rage', 'grab'):  # two buttons together
-                button_icons.draw(game_icon, 'label:L3+R3' if button == 'rage' else 'label:L1+O', 'playstation', size)
-            else:  # an action of the right stick (dodge): the stick icon labelled RS
-                button_icons.draw(game_icon, 'rightstick', 'xbox', size)
-            title = _(PS_BUTTON_NAMES.get(button) or ACTION_NAMES[button])
+            title = _(PS_BUTTON_NAMES[button])
             ttk.Label(table, text=title, width=-14).grid(row=r, column=1, sticky='w', padx=self.px((0, 12)))
 
-        def slider(key, low, high, unit, parent=None):
-            holder = ttk.Frame(parent or f)
-            amount = self.var(key, 'ini')
-            tk.Scale(holder, from_=low, to=high, orient='horizontal', variable=amount, showvalue=False,
-                     length=self.px(260), width=self.px(12), sliderlength=self.px(18), bg=ACCENT, troughcolor=CARD,
-                     activebackground=ACCENT_HI, highlightthickness=0, bd=0, sliderrelief='flat').pack(side='left')
-            value = ttk.Label(holder, width=7)
-            value.pack(side='left', padx=self.px(10))
-            show = lambda *_a: value.configure(text=f'{amount.get()}{unit}')
-            amount.trace_add('write', show)
-            show()
-            return holder
-
-        # The in-game icons first, then the device: its section is shown, the other hidden (show_device).
+        # The device: its section is shown, the other hidden (show_device). No in-game button icons:
+        # scripts/glyphs.py draws them into God of War III's R_UI.WAD, which WipEout does not have.
         page = f
-        self.row(page, _('In-game button icons'), self.choice(page, 'glyph_style', 'app', GLYPH_STYLES),
-                 hint=_('Replaces the PlayStation button icons inside the game with the ones of your controller. '
-                        'Works on a copy of two game files in the port\'s data folder (about 70 MB); your game folder '
-                        'is never changed. Applied when the game starts.'))
         saved_device = self.app.get('controls_device')
         self.device = tk.StringVar(value=saved_device if saved_device in dict(CONTROL_DEVICES) else 'keyboard')
         self.device_chosen = saved_device in dict(CONTROL_DEVICES)
@@ -2130,14 +2228,9 @@ class Launcher:
         self.note(f, _('Which key or mouse input presses each button of the game.'), top=4)
         table = mapping_table()
         r = 0
-        for row in table_rows('key'):
+        for row in CONTROLS:
             button = row[0]
             r += 1
-            if button == 'rage':
-                ttk.Checkbutton(table, text=_('Rage of Sparta on one input (L3 + R3 together)'),
-                                variable=self.var('rage_one_input', 'app')).grid(
-                    row=r, column=0, columnspan=4, sticky='w', pady=self.px((6, 6)))
-                r += 1
             default = default_input(row, 'key')
             game_button(table, r, button)
             var = tk.StringVar(value=saved['key'].get(button) or default)
@@ -2147,32 +2240,12 @@ class Launcher:
             arrow = ttk.Button(table, text='\u21a9', width=3, takefocus=False,
                                command=lambda b=button, d=default: self.assign_key('key', b, d))
             arrow.grid(row=r, column=3, sticky='w', padx=self.px((6, 0)))
-            self.key_rows[button] = (box, arrow)
-        self.var('rage_one_input', 'app').trace_add('write', lambda *_a: self.grey_rage_rows())
-        self.grey_rage_rows()
         self.note(f, _('Click a box, then press a key, click a mouse button or turn the wheel (it gives up after '
                        '{} seconds). An input already used by another button swaps with it; the arrow puts one '
-                       'button back on its default. Rage of Sparta presses L3 and R3 together: tick the box above '
-                       'it to use one input instead of two. Grab presses L1 and Circle together. Dodge evades the '
-                       'way you are moving (WASD), or back when standing still. Touchpad right opens the game\'s '
-                       'pause menu. Insert always opens the port\'s menu and cannot be bound. Applied when the '
-                       'game starts.').format(CAPTURE_SECONDS))
+                       'button back on its default. Touchpad right opens the game\'s pause menu. Insert always '
+                       'opens the port\'s menu and cannot be bound. Applied when the game starts.').format(CAPTURE_SECONDS))
         ttk.Button(f, text=_('Reset keyboard & mouse to defaults'), command=lambda: self.reset_controls('key')).grid(
             row=self.next_row(f), column=0, sticky='w', pady=self.px((14, 0)))
-        self.row(f, _('Joystick prompts'), self.choice(f, 'stick_prompts', 'app', STICK_PROMPTS),
-                 hint=_('How the stick-rotation prompts are answered. Keyboard: type the turn instead, half turns '
-                        'from the top D S A (clockwise) or A S D, from the bottom A W D or D W A, full turns D S A W '
-                        'or A S D W; a key out of turn starts again. Adaptive mouse: draw the turn with the mouse.'))
-        self.row(f, _('Mouse prompt distance'), slider('mouse_prompt_distance', 16, 200, ' px'),
-                 _('Adaptive mouse: how far the mouse moves for one step of a rotation. Also in the in-game menu.'))
-        self.row(f, _('Right stick style'), self.choice(f, 'mouse_aim_style', 'ini', AIM_STYLES),
-                 hint=_('Aiming with the mouse while L2 is held (Head of Helios, Bow of Apollo). Relative: the stick '
-                        'follows the movement and goes back to neutral when the mouse stops. Absolute: where the mouse '
-                        'was when L2 was pressed is the centre, and the stick points from it to the mouse. Also in '
-                        'the in-game menu.'))
-        self.row(f, _('Right stick sensitivity'), slider('mouse_aim_sensitivity', 10, 200, '%'),
-                 _('Aiming with the mouse while L2 is held: lower needs more mouse movement for the same stick, '
-                   'higher less. Also in the in-game menu.'))
         self.check(f, 'mouse_lock', 'ini', _('Keep the mouse in the game window'),
                    _('While you play, the mouse stays in the game window, so a click cannot land on another monitor '
                      'or app. The in-game menu and switching windows get it back. Also in the in-game menu.'))
@@ -2188,7 +2261,7 @@ class Launcher:
             ttk.Radiobutton(names, text=PAD_STYLE_NAMES[value], value=value, variable=self.pad_style,
                             command=self.relabel_pad_controls).pack(side='left', padx=self.px((0, 14)))
         self.row(f, _('Controller type'), names)
-        self.row(f, _('Vibration'), slider('vibration', 0, 100, '%', f), _("Strength of the gamepad's vibration; 0% turns it off."))
+        self.row(f, _('Vibration'), self.slider(f, 'vibration', 0, 100, '%'), _("Strength of the gamepad's vibration; 0% turns it off."))
         table = mapping_table(f)
         for r, (button, _key, pad) in enumerate(CONTROLS, start=1):
             game_button(table, r, button)
@@ -2292,14 +2365,6 @@ class Launcher:
         box.configure(command=capture)
         return box
 
-    def grey_rage_rows(self):
-        """Rage of Sparta on one input greys L3 and R3; off, it greys the Rage row."""
-        combined = bool(self.var('rage_one_input', 'app').get())
-        for button in (*RAGE_BUTTONS, 'rage'):
-            enabled = combined if button == 'rage' else not combined
-            for widget in self.key_rows.get(button, ()):
-                widget.state(['!disabled'] if enabled else ['disabled'])
-
     def assign_key(self, kind, button, name):
         """Binds `name` to `button` in a table; a button that had it takes the old one (bind_key)."""
         table = self.control_vars[kind]
@@ -2338,7 +2403,7 @@ class Launcher:
     def reset_controls(self, kind=None):
         """Puts one table ('key' or 'pad') or both (None) back on the defaults."""
         for table in ('key', 'pad'):
-            for row in table_rows(table):
+            for row in CONTROLS:
                 if kind in (None, table) and row[0] in self.control_vars.get(table, {}):
                     self.control_vars[table][row[0]].set(default_input(row, table) or '')
         self.relabel_pad_controls()
@@ -2373,7 +2438,7 @@ class Launcher:
                  _('For launcher only. Applies after Save.'))
         self.check(f, 'close_on_play', 'app', _('Close the launcher when the game starts', 'Закрывать лаунчер при запуске игры'))
         if WINDOWS:
-            self.check(f, 'check_updates', 'app', _('Check for updates when the launcher opens',
+            self.check(f, 'update_popup', 'app', _('Check for updates when the launcher opens',
                                                     'Проверять обновления при открытии лаунчера'))
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=self.px((10, 0)))
@@ -2390,7 +2455,7 @@ class Launcher:
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=self.px((6, 0)))
         ttk.Button(holder, text=_('Port folder', 'Папка порта'), command=lambda: self.open_path(DATA_DIR)).pack(side='left')
-        ttk.Button(holder, text='gow3.ini', command=lambda: self.open_path(ini_path())).pack(side='left', padx=self.px(6))
+        ttk.Button(holder, text=_('Settings'), command=lambda: self.open_path(ini_path())).pack(side='left', padx=self.px(6))
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=self.px((10, 0)))
         ttk.Button(holder, text=_('Clear shader cache', 'Очистить кэш шейдеров'), command=self.clear_cache).pack(side='left')
@@ -2412,6 +2477,9 @@ class Launcher:
                    _('Shows where the frame waits for the GPU and which reads cause it. For performance tests.'))
         self.check(body, 'frame_capture_key', 'app', _('F11 captures a frame for analysis'),
                    _('Records how the next frame is drawn into the captures folder.'))
+        self.check(body, 'upscaler_key', 'app', _('F10 switches the anti-aliasing (off, FSR 3.1, DLAA)'),
+                   _('For comparing them in the same scene. Needs Graphics > Temporal anti-aliasing on; '
+                     'DLAA only where the game found DLSS working.'))
         self.check(body, 'vk_validation', 'app', _('Vulkan validation layers (needs the Vulkan SDK; much slower)',
                                                    'Слои валидации Vulkan (нужен Vulkan SDK; сильно замедляет)'))
         shown = tk.BooleanVar(value=False)
@@ -2476,7 +2544,8 @@ class Launcher:
         from patches import game_patchable, patch_status
         if not game_patchable(self.meta_dir()):
             return _('{} · 60 FPS · no patches for this game').format(resolution)
-        text = _('{} · {} FPS engine · {} patches').format(resolution, self.var('engine_fps', 'ini').get(), len(names))
+        # No engine frame rate: WipEout's profile sets 240 (God of War III's engine_fps setting does nothing here).
+        text = _('{} · {} patches').format(resolution, len(names))
         # Which patches the game's eboot.bin had is known once the game has started (patches.py).
         status = patch_status(DATA_DIR / 'out')
         if status and status.get('skipped'):
@@ -2878,8 +2947,8 @@ class Launcher:
         if not self.collect():
             return
         if not game_info(self.app['game_dir']):
-            self.messagebox.showerror(APP_NAME, _('Choose the game folder with eboot.bin (CUSA01623).',
-                                                  'Выберите папку игры с eboot.bin (CUSA01623).'))
+            self.messagebox.showerror(APP_NAME, _('Choose the game folder with eboot.bin (CUSA07671 / CUSA05670).',
+                                                  'Выберите папку игры с eboot.bin (CUSA07671 / CUSA05670).'))
             self.show('game')
             return
         if not self.offer_system_files():
@@ -3004,6 +3073,8 @@ class Launcher:
             path = DATA_DIR / 'user'
         elif key == 'mods_dir' and not path:
             path = DATA_DIR / 'mods'
+        elif key == 'music_dir' and not path:
+            path = self.user_dir() / 'music'
         elif key == 'patches_dir' and not path:
             path = DATA_DIR / 'patches'
         path = Path(path or DATA_DIR)
@@ -3020,24 +3091,34 @@ class Launcher:
 
     # ---- updates -------------------------------------------------------------------------------
     def check_update(self, manual=False):
-        """Helper thread: asks GitHub for the newest release and offers it when it is newer."""
-        try:
-            version, url, page = latest_release()
-        except (OSError, ValueError, KeyError) as failure:
+        """Helper thread: asks GitHub for the newest release and offers it when it is newer. At start it
+        tries three times, so a short network drop does not hide a new version."""
+        for _attempt in range(1 if manual else 3):
+            try:
+                version, url, page, notes = latest_release()
+                break
+            except (OSError, ValueError, KeyError) as failure:
+                error = failure
+                time.sleep(0 if manual else 20)
+        else:
             if manual:
-                self.ui_calls.put(lambda error=failure: self.messagebox.showerror(
+                self.ui_calls.put(lambda: self.messagebox.showerror(
                     APP_NAME, _('Could not check for updates: {}', 'Не удалось проверить обновления: {}').format(error)))
             return
 
         def show():
-            if version_tuple(version) > version_tuple(APP_VERSION):
-                self.offer_update(version, url, page)
+            # A release without its zip yet (it is still being built) is offered only on a manual check.
+            if version_tuple(version) > version_tuple(APP_VERSION) and (url or manual):
+                self.offer_update(version, url, page, notes)
+                if manual:
+                    self.update_dialog(version, url, page, notes)
             elif manual:
                 self.messagebox.showinfo(APP_NAME, _('You have the latest version ({}).',
                                                          'У вас последняя версия ({}).').format(APP_VERSION))
         self.ui_calls.put(show)
 
-    def offer_update(self, version, url, page):
+    def offer_update(self, version, url, page, notes=''):
+        """The side box of a newer version, and once per launcher session its pop-up."""
         if self.update_box:
             return
         tk, ttk = self.tk, self.ttk
@@ -3049,40 +3130,100 @@ class Launcher:
         buttons = tk.Frame(box, bg=CARD)
         buttons.pack(fill='x', padx=self.px(10), pady=self.px((0, 10)))
         self.update_button = ttk.Button(buttons, text=_('Update', 'Обновить'),
-                                        command=lambda: self.install_update(version, url, page))
+                                        command=lambda: self.update_dialog(version, url, page, notes))
         self.update_button.pack(fill='x')
         ttk.Button(buttons, text=_("What's new", 'Что нового'), command=lambda: open_url(page)).pack(
             fill='x', pady=self.px((4, 0)))
         box.pack(fill='x', padx=self.px((22, 18)), pady=self.px((0, 14)), before=self.side_note)
         self.update_box = box
-        self.pending_update = (version, url, page)
+        self.pending_update = (version, url, page, notes)
         if not self.process:
             self.status.configure(text=text, fg=TEXT)
+        if not self.update_popped:
+            self.update_popped = True
+            self.update_dialog(version, url, page, notes)
+
+    def update_dialog(self, version, url, page, notes):
+        """The pop-up of a newer version: what is new, then UPDATE NOW downloads and installs it."""
+        if self.update_window and self.update_window.winfo_exists():
+            self.update_window.deiconify()
+            self.update_window.lift()
+            return
+        tk, ttk = self.tk, self.ttk
+        win = self.update_window = tk.Toplevel(self.root, bg=PANEL)
+        win.title(APP_NAME)
+        win.transient(self.root)
+        win.resizable(False, False)
+        pad = self.px(22)
+        tk.Label(win, text=_('A new version is ready'), bg=PANEL, fg=TEXT, font=self.heading_font(17)).pack(
+            anchor='w', padx=pad, pady=(pad, self.px(2)))
+        tk.Label(win, text=_('Version {} is out. You have version {}.').format(version, APP_VERSION), bg=PANEL, fg=MUTED,
+                 font=self.font(UI_FONT, 10)).pack(anchor='w', padx=pad)
+        if notes:
+            tk.Label(win, text=_("What's new", 'Что нового'), bg=PANEL, fg=TEXT,
+                     font=self.font(UI_FONT, 10, 'bold')).pack(anchor='w', padx=pad, pady=(self.px(14), self.px(4)))
+            text = tk.Text(win, width=70, height=min(12, notes.count('\n') + len(notes) // 70 + 2), wrap='word', bg=CARD, fg=TEXT,
+                           relief='flat', highlightthickness=0, font=self.font(UI_FONT, 10),
+                           padx=self.px(12), pady=self.px(10))
+            text.insert('1.0', notes)
+            text.configure(state='disabled')
+            text.pack(fill='x', padx=pad)
+        status = tk.Label(win, text=_('Your saves, settings, mods and music stay.'), bg=PANEL, fg=MUTED,
+                          font=self.font(UI_FONT, 9), anchor='w', justify='left')
+        status.pack(fill='x', padx=pad, pady=(self.px(12), 0))
+        bar = ttk.Progressbar(win, maximum=100)
+        buttons = tk.Frame(win, bg=PANEL)
+        buttons.pack(fill='x', padx=pad, pady=(self.px(14), pad))
+        later = ttk.Button(buttons, text=_('Later'), command=win.destroy)
+        later.pack(side='right')
+        now = ttk.Button(buttons, text=_('UPDATE NOW'), style='Play.TButton',
+                         command=lambda: self.install_update(version, url, page))
+        now.pack(side='right', padx=(0, self.px(10)))
+        ttk.Button(buttons, text=_('Release page'), style='Link.TButton', command=lambda: open_url(page)).pack(side='left')
+        self.update_parts = status, bar, now, later
+        win.update_idletasks()  # centred over the launcher
+        root = self.root
+        x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_reqwidth()) // 2)
+        y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_reqheight()) // 3)
+        win.geometry(f'+{x}+{y}')
+        win.lift()
+        now.focus_set()
+
+    def update_progress(self, text=None, percent=0):
+        """The download's progress in the pop-up and the side box; None: back to the offer."""
+        busy = text is not None
+        if self.update_box:
+            self.update_button.configure(state='disabled' if busy else 'normal')
+            self.update_label.configure(text=f'{percent}%' if busy else
+                                        _('Version {} is available.', 'Доступна версия {}.').format(self.pending_update[0]))
+        if self.update_window and self.update_window.winfo_exists():
+            status, bar, now, later = self.update_parts
+            for button in (now, later):
+                button.configure(state='disabled' if busy else 'normal')
+            # The window cannot be closed while the download runs; it closes with the launcher.
+            self.update_window.protocol('WM_DELETE_WINDOW', (lambda: None) if busy else self.update_window.destroy)
+            status.configure(text=text or _('Your saves, settings, mods and music stay.'), fg=TEXT if busy else MUTED)
+            if busy:
+                bar.pack(fill='x', padx=self.px(22), pady=(self.px(8), 0), before=now.master)
+                bar.configure(value=percent)
+            else:
+                bar.pack_forget()
 
     def install_update(self, version, url, page):
         if self.process:
             self.messagebox.showinfo(APP_NAME, _('Close the game before updating.', 'Закройте игру перед обновлением.'))
             return
-        if not FROZEN or not url:  # a source tree updates with git
+        if not FROZEN or not url:  # a source tree updates with git; a release without its zip: its page
             open_url(page)
             return
-        if not self.messagebox.askyesno(APP_NAME, _(
-                'Install version {} now? The launcher closes, installs it and opens again. Saves and settings are kept.',
-                'Установить версию {} сейчас? Лаунчер закроется, установит её и откроется снова. Сохранения и '
-                'настройки останутся.').format(version)):
-            return
-        self.update_button.configure(state='disabled')
-
-        def progress(percent):
-            self.update_label.configure(text=_('Downloading version {}… {}%', 'Загрузка версии {}… {}%').format(
-                version, percent))
+        self.update_progress(_('Downloading version {}…').format(version))
 
         def work():
             try:
                 shutil.rmtree(UPDATE_DIR, ignore_errors=True)
                 UPDATE_DIR.mkdir(parents=True, exist_ok=True)
                 archive = UPDATE_DIR / 'update.zip'
-                request = urllib.request.Request(url, headers={'User-Agent': 'gow3-launcher'})
+                request = urllib.request.Request(url, headers={'User-Agent': 'wipeout-launcher'})
                 with urllib.request.urlopen(request, timeout=60) as response, open(archive, 'wb') as out:
                     total, done, shown = int(response.headers.get('Content-Length') or 0), 0, -1
                     while chunk := response.read(1 << 20):
@@ -3091,7 +3232,9 @@ class Launcher:
                         percent = done * 100 // total if total else 0
                         if percent != shown:
                             shown = percent
-                            self.ui_calls.put(lambda p=percent: progress(p))
+                            text = _('Downloading version {}… {} of {} MB').format(version, done >> 20, total >> 20)
+                            self.ui_calls.put(lambda t=text, p=percent: self.update_progress(t, p))
+                self.ui_calls.put(lambda: self.update_progress(_('Unpacking…'), 100))
                 with zipfile.ZipFile(archive) as package:
                     package.extractall(UPDATE_DIR / 'new')
                 archive.unlink()
@@ -3101,11 +3244,12 @@ class Launcher:
                 # The new launcher copies itself over this installation once this one has closed.
                 subprocess.Popen([str(new / 'WipEout.exe'), '--install-update', str(PORT_DIR), str(os.getpid())],
                                  cwd=str(new), stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
-                self.ui_calls.put(self.root.destroy)
+                self.ui_calls.put(lambda: self.update_progress(
+                    _('Installing… the launcher opens again in a few seconds.'), 100))
+                self.ui_calls.put(lambda: self.root.after(1500, self.root.destroy))
             except (OSError, zipfile.BadZipFile) as failure:
                 def failed(error=failure):
-                    self.update_button.configure(state='normal')
-                    self.update_label.configure(text=_('Version {} is available.', 'Доступна версия {}.').format(version))
+                    self.update_progress()
                     self.messagebox.showerror(APP_NAME, _('Update failed: {}', 'Не удалось обновить: {}').format(error))
                 self.ui_calls.put(failed)
         threading.Thread(target=work, daemon=True).start()
@@ -3166,8 +3310,8 @@ class Launcher:
             return
         game = self.var('game_dir', 'app').get()
         if not game_info(game):
-            self.messagebox.showerror(APP_NAME, _('Choose the game folder with eboot.bin (CUSA01623).',
-                                                  'Выберите папку игры с eboot.bin (CUSA01623).'))
+            self.messagebox.showerror(APP_NAME, _('Choose the game folder with eboot.bin (CUSA07671 / CUSA05670).',
+                                                  'Выберите папку игры с eboot.bin (CUSA07671 / CUSA05670).'))
             return
         self.root.configure(cursor='watch')
         self.root.update_idletasks()
@@ -3310,8 +3454,15 @@ def version_tuple(text):
     return tuple(int(number) for number in re.findall(r'\d+', text or ''))
 
 
+def whats_new(body):
+    """The "What's new" part of a release note as plain text (the whole note without one)."""
+    parts = re.split(r"(?im)^##\s*what.s new\s*$", body, maxsplit=1)
+    text = re.split(r'(?m)^## ', parts[-1], maxsplit=1)[0]
+    return re.sub(r'\*\*|`', '', text).strip()
+
+
 def latest_release():
-    """(version, zip URL, page URL) of the newest GitHub release."""
+    """(version, zip URL, page URL, what's new) of the newest GitHub release."""
     request = urllib.request.Request(RELEASES_API, headers={'Accept': 'application/vnd.github+json',
                                                             'User-Agent': 'gow3-launcher'})
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -3319,7 +3470,7 @@ def latest_release():
     version = '.'.join(re.findall(r'\d+', release['tag_name']))
     url = next((asset['browser_download_url'] for asset in release.get('assets', [])
                 if asset.get('name', '').lower().endswith('.zip')), None)
-    return version, url, release.get('html_url') or RELEASES_PAGE
+    return version, url, release.get('html_url') or RELEASES_PAGE, whats_new(release.get('body') or '')
 
 
 def install_update(target, wait_pid):
