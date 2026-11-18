@@ -418,6 +418,10 @@ extern "C" int gow3gpu_overlay_captures_input(void) {
     return Gow3Overlay::CapturesInput() ? 1 : 0;
 }
 
+extern "C" int gow3gpu_overlay_stereo_combo(void) {
+    return Gow3Overlay::StereoCombo() ? 1 : 0;
+}
+
 extern "C" int gow3gpu_text_input_begin(const char* initial, const char* prompt) {
     if (!g_window) return 0;
     g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");
