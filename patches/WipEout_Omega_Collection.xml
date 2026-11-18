@@ -16,14 +16,6 @@
        the picture horizontally (presumably the motion blur reprojection). The vertical field of view is
        fixed, so a wider aspect ratio widens the view (Hor+) with no camera code changes. The split screen
        ratios are untouched.
-     - Each pool also holds pi/360, which turns the vertical field of view (65 degrees in a race) into the
-       half angle whose tangent builds the projection and the vertical culling planes. Taller than 16:9
-       (4:3) the entries scale both copies so the horizontal view stays the 16:9 one and the picture shows
-       more at the top and bottom (Vert+); a lone 4:3 aspect ratio would crop the sides instead.
-     - The horizontal culling half angle is the vertical one times 16/9 (0.0155 at 0x860d28, used at
-       0x3ae820): 57.8 degrees against a 48.6 degree 16:9 view, so 21:9 (56.8) still fits. From about
-       2.49:1 (32:9: 66.2) the entries raise it to 1.1 times the true angle so nothing vanishes at the sides.
-     The entries are written by tools/make_wipeout_resolution_patch.py (it checks every signature).
 
      - From 3840 pixels wide the game sets a "4K mode" flag (0x1212c39, at 0x7fb657: (field & 0xff00) > 0xeff),
        read at about 55 sites. With it the scene renders at half width with checkerboard and a compute resolve
@@ -42,7 +34,6 @@
      single race (Vineta K). 3840x2160 ran out of video memory there (8 GB) while loading the race.
      5120x1440 (32:9): the same sites; its menus checked on an RTX 4070 Laptop, where a race ran out of
      video memory (8 GB) while loading, with or without multisampling. Not tested in a race.
-     5120x1440 and the 4:3 sizes also played on a desktop GPU; 3840x1600 (21:9) not tested in game yet.
      Not tested: CUSA05670 (EU), split screen, replays, every event type. -->
 <Patch>
     <TitleID>
@@ -53,8 +44,12 @@
         <PatchList>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d08" Value="26b41740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="26b4973f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="26b49740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d48" Value="26b41740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="26b4973f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="26b49740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
             <!-- output size: minimum width -->
             <Line Type="bytes" Address="0x00bfa2e8" Value="000a0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
             <!-- output size: width cap -->
@@ -91,14 +86,27 @@
             <Line Type="bytes" Address="0x00a4b5b9" Value="00050000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
             <!-- half-resolution height multiple -->
             <Line Type="bytes" Address="0x00a4b5c4" Value="1c020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 5120x2160" Note="Renders at 5120x2160 (2.370:1): output and half-resolution buffers at that size and the camera aspect ratio set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen." Author="d4g" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 5120x2160" Note="Renders at 5120x2160 (2.370:1): output and half-resolution buffers at that size and the camera aspect ratio set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen. Outside PS4 Pro mode the game gets 1 GB more of its own video memory for the bigger picture (DMEM to 1024 MB), so big races load." Author="d4g" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 5248 MB. At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000004801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d08" Value="26b41740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="26b4973f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="26b49740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d48" Value="26b41740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="26b4973f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="26b49740" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
             <!-- output size: minimum width -->
             <Line Type="bytes" Address="0x00bfa2e8" Value="00140000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
             <!-- output size: width cap -->
@@ -135,6 +143,89 @@
             <Line Type="bytes" Address="0x00a4b5b9" Value="000a0000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
             <!-- half-resolution height multiple -->
             <Line Type="bytes" Address="0x00a4b5c4" Value="38040000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 720p" Note="Renders at 1280x720 (16:9): output and half-resolution buffers at that size. Same 16:9 view as the game, softer, for graphics cards that are short of speed or memory." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="00050000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="0005" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="00050000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="d0020000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="d002" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="d0020000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="80020000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="68010000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="80020000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="68010000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="80020000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="68010000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="8002" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="6801" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="80020000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="68010000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="80020000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="68010000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 900p" Note="Renders at 1600x900 (16:9): output and half-resolution buffers at that size. Same 16:9 view as the game, softer, for graphics cards that are short of speed or memory." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="40060000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="4006" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="40060000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="84030000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="8403" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="84030000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="20030000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="c2010000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="20030000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="c2010000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="20030000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="c2010000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="2003" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="c201" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="20030000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="c2010000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="20030000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="c2010000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
         </PatchList>
     </Metadata>
     <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 1440p" Note="Renders at 2560x1440 (16:9): output and half-resolution buffers at that size. Same 16:9 view as the game, sharper." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
@@ -177,8 +268,14 @@
             <Line Type="bytes" Address="0x00a4b5c4" Value="d0020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 4K" Note="Renders at 3840x2160 (16:9): output and half-resolution buffers at that size. Same 16:9 view as the game, sharper. Needs more than 8 GB of video memory." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 4K" Note="Renders at 3840x2160 (16:9): output and half-resolution buffers at that size. Same 16:9 view as the game, sharper. Needs more than 8 GB of video memory. Outside PS4 Pro mode the game gets 1 GB more of its own video memory for the bigger picture (DMEM to 1024 MB), so big races load." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 5248 MB. At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000004801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
             <!-- output size: minimum width -->
             <Line Type="bytes" Address="0x00bfa2e8" Value="000f0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
             <!-- output size: width cap -->
@@ -217,12 +314,114 @@
             <Line Type="bytes" Address="0x00a4b5c4" Value="38040000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 3440x1440" Note="Renders at 3440x1440 (2.389:1): output and half-resolution buffers at that size and the camera aspect ratio set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 5120x2880" Note="Renders at 5120x2880 (16:9, 5K): output and half-resolution buffers at that size, for a sharper picture scaled down to a 1440p or 4K screen (#188). Beta: needs much more video memory than 4K. The game gets 2 GB more of its own video memory for the bigger picture (DMEM to 2048 MB)." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 6272 MB (5K). At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000008801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="00140000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="0014" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="00140000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="400b0000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="400b" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="400b0000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="000a0000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="a0050000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="000a0000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="a0050000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="000a0000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="a0050000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="000a" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="a005" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="000a0000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="a0050000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="000a0000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="a0050000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 7680x4320" Note="Renders at 7680x4320 (16:9, 8K): output and half-resolution buffers at that size, for a sharper picture scaled down to a 4K or smaller screen (#188). Beta: needs a lot of video memory. The game gets 4 GB more of its own video memory for the bigger picture (DMEM to 4096 MB)." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 8320 MB (8K). At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000000802000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="001e0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="001e" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="001e0000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="e0100000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="e010" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="e0100000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="000f0000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="70080000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="000f0000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="70080000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="000f0000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="70080000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="000f" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="7008" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="000f0000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="70080000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="000f0000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="70080000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 3440x1440" Note="Renders at 3440x1440 (2.389:1): output and half-resolution buffers at that size and the camera aspect ratio set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen. Outside PS4 Pro mode the game gets 1 GB more of its own video memory for the bigger picture (DMEM to 1024 MB), so big races load." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 5248 MB. At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000004801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d08" Value="8ee31840" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="8ee3983f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="8ee39840" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d48" Value="8ee31840" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="8ee3983f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="8ee39840" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
             <!-- output size: minimum width -->
             <Line Type="bytes" Address="0x00bfa2e8" Value="700d0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
             <!-- output size: width cap -->
@@ -259,14 +458,302 @@
             <Line Type="bytes" Address="0x00a4b5b9" Value="b8060000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
             <!-- half-resolution height multiple -->
             <Line Type="bytes" Address="0x00a4b5c4" Value="d0020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 5120x1440" Note="Renders at 5120x1440 (32:9): output and half-resolution buffers at that size and the camera set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen." Author="jontorre (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 1920x1200" Note="Renders at 1920x1200 (16:10): output and half-resolution buffers at that size and the camera aspect ratio set to match. The view is as wide as at 16:9 and a little taller (#125): the field of view grows with the height. HUD and menus stay 16:9 in the middle of the screen." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
             <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d08" Value="cdcccc3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="cdcc4c3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="cdcc4c40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <Line Type="bytes" Address="0x00c60d0c" Value="b5a61a3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d48" Value="cdcccc3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="cdcc4c3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="cdcc4c40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <Line Type="bytes" Address="0x00c60d4c" Value="b5a61a3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="80070000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="8007" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="80070000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="b0040000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="b004" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="b0040000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="c0030000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="58020000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="c0030000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="58020000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="c0030000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="58020000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="c003" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="5802" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="c0030000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="58020000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="c0030000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="58020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 2560x1600" Note="Renders at 2560x1600 (16:10): output and half-resolution buffers at that size and the camera aspect ratio set to match. The view is as wide as at 16:9 and a little taller (#125): the field of view grows with the height. HUD and menus stay 16:9 in the middle of the screen." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d08" Value="cdcccc3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="cdcc4c3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="cdcc4c40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <Line Type="bytes" Address="0x00c60d0c" Value="b5a61a3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d48" Value="cdcccc3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="cdcc4c3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="cdcc4c40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <Line Type="bytes" Address="0x00c60d4c" Value="b5a61a3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="000a0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="000a" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="000a0000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="40060000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="4006" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="40060000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="00050000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="20030000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="00050000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="20030000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="00050000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="20030000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="0005" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="2003" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="00050000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="20030000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="00050000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="20030000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 2880x1800" Note="Renders at 2880x1800 (16:10): output and half-resolution buffers at that size and the camera aspect ratio set to match. The view is as wide as at 16:9 and a little taller (#125): the field of view grows with the height. HUD and menus stay 16:9 in the middle of the screen. Outside PS4 Pro mode the game gets 1 GB more of its own video memory for the bigger picture (DMEM to 1024 MB), so big races load." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 5248 MB. At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000004801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d08" Value="cdcccc3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="cdcc4c3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="cdcc4c40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <Line Type="bytes" Address="0x00c60d0c" Value="b5a61a3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d48" Value="cdcccc3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="cdcc4c3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="cdcc4c40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <Line Type="bytes" Address="0x00c60d4c" Value="b5a61a3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="400b0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="400b" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="400b0000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="08070000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="0807" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="08070000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="a0050000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="84030000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="a0050000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="84030000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="a0050000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="84030000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="a005" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="8403" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="a0050000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="84030000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="a0050000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="84030000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 1920x1440" Note="Renders at 1920x1440 (4:3): output and half-resolution buffers at that size and the camera aspect ratio set to match. The view is as wide as at 16:9 and taller (#125): the field of view grows with the height. HUD and menus stay 16:9 in the middle of the screen." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d08" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <Line Type="bytes" Address="0x00c60d0c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d48" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <Line Type="bytes" Address="0x00c60d4c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="80070000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="8007" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="80070000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="a0050000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="a005" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="a0050000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="c0030000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="d0020000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="c0030000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="d0020000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="c0030000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="d0020000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="c003" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="d002" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="c0030000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="d0020000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="c0030000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="d0020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 3840x1600" Note="Renders at 3840x1600 (2.400:1): output and half-resolution buffers at that size and the camera aspect ratio set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen. Outside PS4 Pro mode the game gets 1 GB more of its own video memory for the bigger picture (DMEM to 1024 MB), so big races load." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 5248 MB. At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000004801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d08" Value="9a991940" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="9a99993f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="9a999940" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <!-- camera aspect ratio (16/9) -->
+            <Line Type="bytes" Address="0x00c60d48" Value="9a991940" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="9a99993f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="9a999940" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <!-- output size: minimum width -->
+            <Line Type="bytes" Address="0x00bfa2e8" Value="000f0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
+            <!-- output size: width cap -->
+            <Line Type="bytes" Address="0x00bfa2ee" Value="000f" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
+            <!-- output size: width compare -->
+            <Line Type="bytes" Address="0x00bfa31d" Value="000f0000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
+            <!-- output size: minimum height -->
+            <Line Type="bytes" Address="0x00bfa2f6" Value="40060000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
+            <!-- output size: height cap -->
+            <Line Type="bytes" Address="0x00bfa302" Value="4006" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
+            <!-- output size: height compare -->
+            <Line Type="bytes" Address="0x00bfa367" Value="40060000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44654" Value="80070000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a44659" Value="20030000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a44708" Value="80070000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4470f" Value="20030000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
+            <!-- half-resolution buffer width -->
+            <Line Type="bytes" Address="0x00a4473d" Value="80070000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
+            <!-- half-resolution buffer height -->
+            <Line Type="bytes" Address="0x00a4474a" Value="20030000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b51b" Value="8007" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b520" Value="2003" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
+            <!-- half-resolution default width -->
+            <Line Type="bytes" Address="0x00a4b52c" Value="80070000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
+            <!-- half-resolution default height -->
+            <Line Type="bytes" Address="0x00a4b539" Value="20030000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
+            <!-- half-resolution width multiple -->
+            <Line Type="bytes" Address="0x00a4b5b9" Value="80070000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
+            <!-- half-resolution height multiple -->
+            <Line Type="bytes" Address="0x00a4b5c4" Value="20030000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 5120x1440" Note="Renders at 5120x1440 (32:9): output and half-resolution buffers at that size and the camera aspect ratio set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen. Needs more than 8 GB of video memory. Outside PS4 Pro mode the game gets 1 GB more of its own video memory for the bigger picture (DMEM to 1024 MB), so big races load." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <!-- The game's video memory pool: 0x643180 takes {size, 256 MB, ...} at 0x86bb60 (PS4) or
+                 0x86bb80 (PS4 Pro, 4736 MB, left as it is: on an 8 GB card Pro mode at 4K then ran out
+                 of video memory at the start). 4224 MB -> 5248 MB. At 4K a race's models did not fit
+                 any more: the model loader failed ("Not enough Vram and MainUncache memory ... of
+                 RcsModel"), 0x6265a0 gave -1 and 0x7b87d1 wrote through it (#112, #96 Unity Square). -->
+            <Line Type="bytes" Address="0x00c6bb60" Value="0000004801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="0"/>
+            <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d08" Value="398e6340" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="398ee33f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="398ee340" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d48" Value="398e6340" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="398ee33f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="398ee340" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
             <!-- horizontal culling half angle (pi/360 * 16/9): wider than the view -->
             <Line Type="bytes" Address="0x00c60d28" Value="3621a03c" Pattern="3c 00 00 80 bf 9a 99 99 bf 00 00 a0 40 00 00 00 3e 17 b7 d1 38 00 00 40 c0 97 2e 7e 3c" At="25"/>
             <!-- output size: minimum width -->
@@ -305,62 +792,23 @@
             <Line Type="bytes" Address="0x00a4b5b9" Value="000a0000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
             <!-- half-resolution height multiple -->
             <Line Type="bytes" Address="0x00a4b5c4" Value="d0020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 3840x1600" Note="Renders at 3840x1600 (21:9): output and half-resolution buffers at that size and the camera set to match. The camera keeps its vertical field of view, so the wider picture shows more at the sides (Hor+). HUD and menus stay 16:9 in the middle of the screen." Author="jontorre (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
-        <PatchList>
-            <!-- camera aspect ratio (16/9) -->
-            <Line Type="bytes" Address="0x00c60d08" Value="9a991940" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
-            <!-- camera aspect ratio (16/9) -->
-            <Line Type="bytes" Address="0x00c60d48" Value="9a991940" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
-            <!-- output size: minimum width -->
-            <Line Type="bytes" Address="0x00bfa2e8" Value="000f0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
-            <!-- output size: width cap -->
-            <Line Type="bytes" Address="0x00bfa2ee" Value="000f" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
-            <!-- output size: width compare -->
-            <Line Type="bytes" Address="0x00bfa31d" Value="000f0000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
-            <!-- output size: minimum height -->
-            <Line Type="bytes" Address="0x00bfa2f6" Value="40060000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
-            <!-- output size: height cap -->
-            <Line Type="bytes" Address="0x00bfa302" Value="4006" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
-            <!-- output size: height compare -->
-            <Line Type="bytes" Address="0x00bfa367" Value="40060000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
-            <!-- half-resolution buffer width -->
-            <Line Type="bytes" Address="0x00a44654" Value="80070000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
-            <!-- half-resolution buffer height -->
-            <Line Type="bytes" Address="0x00a44659" Value="20030000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
-            <!-- half-resolution buffer width -->
-            <Line Type="bytes" Address="0x00a44708" Value="80070000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
-            <!-- half-resolution buffer height -->
-            <Line Type="bytes" Address="0x00a4470f" Value="20030000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
-            <!-- half-resolution buffer width -->
-            <Line Type="bytes" Address="0x00a4473d" Value="80070000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
-            <!-- half-resolution buffer height -->
-            <Line Type="bytes" Address="0x00a4474a" Value="20030000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
-            <!-- half-resolution default width -->
-            <Line Type="bytes" Address="0x00a4b51b" Value="8007" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
-            <!-- half-resolution default height -->
-            <Line Type="bytes" Address="0x00a4b520" Value="2003" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
-            <!-- half-resolution default width -->
-            <Line Type="bytes" Address="0x00a4b52c" Value="80070000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
-            <!-- half-resolution default height -->
-            <Line Type="bytes" Address="0x00a4b539" Value="20030000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
-            <!-- half-resolution width multiple -->
-            <Line Type="bytes" Address="0x00a4b5b9" Value="80070000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
-            <!-- half-resolution height multiple -->
-            <Line Type="bytes" Address="0x00a4b5c4" Value="20030000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
-        </PatchList>
-    </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 1440x1080" Note="Renders at 1440x1080 (4:3): output and half-resolution buffers at that size and the camera set to match. The camera keeps the horizontal view of the 16:9 game, so the taller picture shows more at the top and bottom (Vert+). HUD and menus stay 16:9 across the width of the screen." Author="jontorre (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 1440x1080" Note="Renders at 1440x1080 (4:3): output and half-resolution buffers at that size and the camera aspect ratio set to match. The view is as wide as at 16:9 and taller (#125): the field of view grows with the height. HUD and menus stay 16:9 in the middle of the screen." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d08" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <Line Type="bytes" Address="0x00c60d0c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d48" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d0c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d4c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <Line Type="bytes" Address="0x00c60d4c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
             <!-- output size: minimum width -->
             <Line Type="bytes" Address="0x00bfa2e8" Value="a0050000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
             <!-- output size: width cap -->
@@ -397,66 +845,23 @@
             <Line Type="bytes" Address="0x00a4b5b9" Value="d0020000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
             <!-- half-resolution height multiple -->
             <Line Type="bytes" Address="0x00a4b5c4" Value="1c020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 1920x1440" Note="Renders at 1920x1440 (4:3): output and half-resolution buffers at that size and the camera set to match. The camera keeps the horizontal view of the 16:9 game, so the taller picture shows more at the top and bottom (Vert+). HUD and menus stay 16:9 across the width of the screen." Author="jontorre (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 2048x1536" Note="Renders at 2048x1536 (4:3): output and half-resolution buffers at that size and the camera aspect ratio set to match. The view is as wide as at 16:9 and taller (#125): the field of view grows with the height. HUD and menus stay 16:9 in the middle of the screen." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d08" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <Line Type="bytes" Address="0x00c60d0c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d48" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d0c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d4c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
-            <!-- output size: minimum width -->
-            <Line Type="bytes" Address="0x00bfa2e8" Value="80070000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
-            <!-- output size: width cap -->
-            <Line Type="bytes" Address="0x00bfa2ee" Value="8007" Pattern="a0 b9 80 07 00 00 66 bf 80 07 bb ff ff ff ff ba" At="8"/>
-            <!-- output size: width compare -->
-            <Line Type="bytes" Address="0x00bfa31d" Value="80070000" Pattern="a1 00 48 8b 45 90 3d 80 07 00 00 89 c6 41 89 c0" At="7"/>
-            <!-- output size: minimum height -->
-            <Line Type="bytes" Address="0x00bfa2f6" Value="a0050000" Pattern="07 bb ff ff ff ff ba 38 04 00 00 66 41 b9 ff ff" At="7"/>
-            <!-- output size: height cap -->
-            <Line Type="bytes" Address="0x00bfa302" Value="a005" Pattern="00 66 41 b9 ff ff 66 41 ba 38 04 4c 8b 25 c5 8a" At="9"/>
-            <!-- output size: height compare -->
-            <Line Type="bytes" Address="0x00bfa367" Value="a0050000" Pattern="8b 3d e2 87 9e 00 3d 38 04 00 00 44 0f b7 f1 b9" At="7"/>
-            <!-- half-resolution buffer width -->
-            <Line Type="bytes" Address="0x00a44654" Value="c0030000" Pattern="a0 00 8b 44 24 14 ba c0 03 00 00 b9 1c 02 00 00" At="7"/>
-            <!-- half-resolution buffer height -->
-            <Line Type="bytes" Address="0x00a44659" Value="d0020000" Pattern="14 ba c0 03 00 00 b9 1c 02 00 00 45 31 c0 45 31" At="7"/>
-            <!-- half-resolution buffer width -->
-            <Line Type="bytes" Address="0x00a44708" Value="c0030000" Pattern="b7 db 31 ff 31 f6 41 b9 c0 03 00 00 c7 04 24 1c" At="8"/>
-            <!-- half-resolution buffer height -->
-            <Line Type="bytes" Address="0x00a4470f" Value="d0020000" Pattern="41 b9 c0 03 00 00 c7 04 24 1c 02 00 00 45 31 e4" At="9"/>
-            <!-- half-resolution buffer width -->
-            <Line Type="bytes" Address="0x00a4473d" Value="c0030000" Pattern="ff be 01 00 00 00 41 b9 c0 03 00 00 44 89 f1 41" At="8"/>
-            <!-- half-resolution buffer height -->
-            <Line Type="bytes" Address="0x00a4474a" Value="d0020000" Pattern="44 89 f1 41 89 d8 c7 04 24 1c 02 00 00 e8 bd 3a" At="9"/>
-            <!-- half-resolution default width -->
-            <Line Type="bytes" Address="0x00a4b51b" Value="c003" Pattern="ca b9 01 0f 00 00 66 41 ba c0 03 66 41 bd 1c 02" At="9"/>
-            <!-- half-resolution default height -->
-            <Line Type="bytes" Address="0x00a4b520" Value="d002" Pattern="00 66 41 ba c0 03 66 41 bd 1c 02 c4 c2 70 f7 f0" At="9"/>
-            <!-- half-resolution default width -->
-            <Line Type="bytes" Address="0x00a4b52c" Value="c0030000" Pattern="f7 f0 d1 ea 84 c0 b9 c0 03 00 00 0f 45 ce 66 44" At="7"/>
-            <!-- half-resolution default height -->
-            <Line Type="bytes" Address="0x00a4b539" Value="d0020000" Pattern="ce 66 44 0f 45 d6 be 1c 02 00 00 66 44 0f 45 ea" At="7"/>
-            <!-- half-resolution width multiple -->
-            <Line Type="bytes" Address="0x00a4b5b9" Value="c0030000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
-            <!-- half-resolution height multiple -->
-            <Line Type="bytes" Address="0x00a4b5c4" Value="d0020000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
-        </PatchList>
-    </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 2048x1536" Note="Renders at 2048x1536 (4:3): output and half-resolution buffers at that size and the camera set to match. The camera keeps the horizontal view of the 16:9 game, so the taller picture shows more at the top and bottom (Vert+). HUD and menus stay 16:9 across the width of the screen." Author="jontorre (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
-        <PatchList>
-            <!-- camera aspect ratio (16/9) -->
-            <Line Type="bytes" Address="0x00c60d08" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
-            <!-- camera aspect ratio (16/9) -->
-            <Line Type="bytes" Address="0x00c60d48" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d0c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d4c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <Line Type="bytes" Address="0x00c60d4c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
             <!-- output size: minimum width -->
             <Line Type="bytes" Address="0x00bfa2e8" Value="00080000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
             <!-- output size: width cap -->
@@ -493,18 +898,23 @@
             <Line Type="bytes" Address="0x00a4b5b9" Value="00040000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
             <!-- half-resolution height multiple -->
             <Line Type="bytes" Address="0x00a4b5c4" Value="00030000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 2560x1920" Note="Renders at 2560x1920 (4:3): output and half-resolution buffers at that size and the camera set to match. The camera keeps the horizontal view of the 16:9 game, so the taller picture shows more at the top and bottom (Vert+). HUD and menus stay 16:9 across the width of the screen." Author="jontorre (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Resolution Patch - 2560x1920" Note="Renders at 2560x1920 (4:3): output and half-resolution buffers at that size and the camera aspect ratio set to match. The view is as wide as at 16:9 and taller (#125): the field of view grows with the height. HUD and menus stay 16:9 in the middle of the screen." Author="AbdelmoumenDeghbouche (sites by d4g)" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d08" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="12"/>
+            <Line Type="bytes" Address="0x00c60d00" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="4"/>
+            <Line Type="bytes" Address="0x00c60d04" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="8"/>
+            <Line Type="bytes" Address="0x00c60d0c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
             <!-- camera aspect ratio (16/9) -->
             <Line Type="bytes" Address="0x00c60d48" Value="abaaaa3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="12"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d0c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 9a 99" At="16"/>
-            <!-- camera field of view: pi/360 scaled, the 16:9 horizontal view (Vert+) -->
-            <Line Type="bytes" Address="0x00c60d4c" Value="f37d313c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
+            <Line Type="bytes" Address="0x00c60d40" Value="abaa2a3f" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="4"/>
+            <Line Type="bytes" Address="0x00c60d44" Value="abaa2a40" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="8"/>
+            <Line Type="bytes" Address="0x00c60d4c" Value="94732f3c" Pattern="00 00 00 bf f3 8e 63 3f f3 8e 63 40 39 8e e3 3f 35 fa 0e 3c 00 00 80 bf 00 00" At="16"/>
             <!-- output size: minimum width -->
             <Line Type="bytes" Address="0x00bfa2e8" Value="000a0000" Pattern="7a 00 00 8a 45 a0 b9 80 07 00 00 66 bf 80 07 bb" At="7"/>
             <!-- output size: width cap -->
@@ -541,12 +951,32 @@
             <Line Type="bytes" Address="0x00a4b5b9" Value="00050000" Pattern="9c 00 01 0f 45 ce 69 d9 c0 03 00 00 20 c2 0f 44" At="8"/>
             <!-- half-resolution height multiple -->
             <Line Type="bytes" Address="0x00a4b5c4" Value="c0030000" Pattern="00 20 c2 0f 44 de 69 c1 1c 02 00 00 84 d2 89 9d" At="8"/>
+            <!-- PS4 Pro mode: its 2D/HDR layer buffer is 3840x2160 (0x7fbdfb), then stretched to the output;
+                 cmove -> mov keeps it at the output size (HDR at any size, SDR below 3840 wide) -->
+            <Line Type="bytes" Address="0x00bfbe0c" Value="4189c6904189cf90" Pattern="41 be 00 0f 00 00 41 bf 70 08 00 00 bf 30 00 00 00 44 0f 44 f0 44 0f 44 f9" At="17"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Native 4K rendering (no checkerboard)" Note="From 3840 pixels wide the game switches to its 4K mode, which renders the scene at half width with checkerboard reconstruction (the Pro path). This keeps the 1080p mode at any size: the scene renders at full resolution with 4-sample depth, sharper and heavier on the GPU (over 100 FPS at 5120x2160 on an RTX 4090). Untick it for checkerboard. It changes nothing below 3840 pixels wide." Author="d4g" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+    <Metadata Title="WipEout Omega Collection" Name="Native 4K rendering (no checkerboard)" Note="From 3840 pixels wide the game switches to its 4K mode, which renders the scene at half width with checkerboard reconstruction (the Pro path). This keeps the 1080p mode at any size: the scene renders at full resolution with 4-sample depth, sharper and heavier on the GPU (over 100 FPS at 5120x2160 on an RTX 4090). Untick it for checkerboard. It changes nothing below 3840 pixels wide. In PS4 Pro mode the game also gets 512 MB more of its own video memory for the full-resolution scene (DMEM to 1024 MB in PS4 Pro mode), so 2048 races with many different ships load (#184)." Author="d4g" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
         <PatchList>
             <!-- 4K mode flag 0x1212c39 = ((field & 0xff00) > 0xeff): 0xeff -> 0xff00 keeps it false -->
             <Line Type="bytes" Address="0x00bfb659" Value="00ff0000" Pattern="8b 05 49 ef a1 00 b9 00 ff 00 00 23 48 3c 81 f9" At="16"/>
+            <!-- The game's video memory pool in Pro mode (Pro mode always outputs 3840x2160, so this
+                 patch always renders the scene at full size there): 0x643180 takes it from 0x86bb80,
+                 4736 MB -> 5248 MB. At 4736 a restart of 2048 Unity Square ran out (#184): heap A had
+                 4458 MiB in use and 277 MiB free in ~6000 gaps (the largest 68 MiB), a ship livery
+                 (one 4096x4096 GNF, 85.3 MiB, from the texture loader at 0x17cce8a) failed, the model
+                 was not loaded and 0x7b87d1 wrote through it. Base PS4 mode reads 0x86bb60 and is
+                 untouched. The pool grows by the same 512 MiB only in Pro mode (patch_requirements). -->
+            <Line Type="bytes" Address="0x00c6bb80" Value="0000004801000000" Pattern="00 00 00 08 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00 00 00 00 28 01 00 00 00 00 00 00 10 00 00 00 00 00 80 00 00 00 00 00 00 00 70 05 00 00 00 00 00" At="32"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Skip the autosave notice" Note="The autosave notice at start goes away as soon as the profile has loaded instead of staying 5.5 seconds (#84). It still shows while the profile loads." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <!-- The "Save Warning" screen (skin.xml, type HDDBoot, 0x56f740) adds each frame's time to
+             [obj+0x184]; once its state machine has set the redirect to the main menu ([obj+0x188]),
+             it still waits until that time is over 5.5 s (vucomiss at 0x56f794, jbe 0x56ff46). The
+             jbe becomes six nops. -->
+        <PatchList>
+            <Line Type="bytes" Address="0x00d6f79c" Pattern="c5 f8 2e 0d ?? ?? ?? ?? 0f 86 ?? ?? ?? ?? 80 3d ?? ?? ?? ?? 00 74 18 8a 05 ?? ?? ?? ?? 84 c0 74 0e 48 8d 35 ?? ?? ?? ?? 48 89 b3 88 01 00 00" At="8" Value="90 90 90 90 90 90"/>
         </PatchList>
     </Metadata>
     <Metadata Title="WipEout Omega Collection" Name="Bug Fix - Startup Hang" Note="Fixes a random hang at start (black screen after 'NEW THREAD'). Always on." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
@@ -561,6 +991,222 @@
         <Target Name="FLAG" Address="0x00eef4c6" Pattern="48 89 df 48 8d 05 ?? ?? ?? ?? c7 43 08 03 00 00 00 c6 43 0c 00 c7 43 18 00 00 00 00 48 c7 43 10 00 00 00 00 48 89 03 e8 ?? ?? ?? ?? 80 3d ?? ?? ?? ?? 00 c6 05 ?? ?? ?? ?? 01 75 24" At="53" Ref="1" Tail="1"/>
         <PatchList>
             <Line Type="bytes" Address="0x00a7a514" Pattern="48 89 df 48 8d 05 ?? ?? ?? ?? c7 43 08 03 00 00 00 c6 43 0c 00 c7 43 18 00 00 00 00 48 c7 43 10 00 00 00 00 48 89 03 e8 ?? ?? ?? ?? 80 3d ?? ?? ?? ?? 00 c6 05 ?? ?? ?? ?? 01 75 24" At="36" Value="48 89 03 c6 05 {rel:FLAG:1} 01 e8 {rel:START:0} 80 3d {rel:DONE:1} 00"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Bug Fix - Effects above 60 FPS" Note="The shield, the weapon-absorb effect, the Detonator bomb's explosion and smoke ring, the boost flare and the underwater sound fade in and out at any frame rate, the ship's idle hover (and the camera following it) moves smoothly, the outside cameras lean with acceleration as much as at 60 FPS, wall hits and landings shake the camera as long as at 60 FPS, and other players' ships online settle onto their network positions as at 60 FPS. All of them move with the timing of the 60 FPS game at any frame rate. Without it, above 60 FPS they stay where they started: the shield shows only after a hit and then stays on screen; the hover moves in 1/60 s jumps. Always on." Author="nero" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <!-- Seven per-frame updates move a value x towards a target in whole 1/60 s steps:
+             n = (int)(dt * 59.999996), then n times x += (target - x) * rate. Above 60 FPS dt * 60 < 1,
+             n is 0 every frame and x never moves. Each now takes one step of the exact factor for its frame
+             time, x += (target - x) * (1 - (1 - rate)^s) with s = dt * 59.999996: one stock step at 60 FPS,
+             the curve of the 60 FPS game at any frame rate (a linear rate * s fell 5-8 % behind it on the
+             absorb fade's 0.1 and 0.15). F computes the factor on the x87 unit (X: fyl2x, f2xm1, fscale;
+             1 - rate <= 0 gives 1): s in xmm3 (kept), rate in xmm2, the factor back in xmm2; nothing else
+             changes but the flags, where powf (SysV) could change every vector register. BLEND does a step
+             for rdx -> {x, target, rate} with s in xmm3, and changes xmm2 and xmm3.
+             Shield.cpp (0x39ce60) moves the shield's colour [obj+0x80] towards [obj+0x90] and its size
+             [obj+0xa4] towards [obj+0xa8]; its block is rewritten in place, with CAVE, X and BLEND after
+             it. C60 is the 59.999996 constant.
+             At the six other sites the target and rate follow x: rdx (saved on the stack; none of these
+             functions uses its red zone) points at x, and BLEND does the step. Only registers the old loop
+             wrote are changed. The rest of each old loop holds a helper (VBLEND, HOVERK, GO, GA, LEANC, F),
+             the same for the two online sites (GC, LEAN2, LEANC2). Helpers are called with rsp = 8 mod 16
+             or 0 mod 16 alike: they need no alignment. -->
+        <!-- The ship's idle hover (0x329620: a random cubic B-spline with a new control point each second,
+             faded out above speed 80 by a 0.99/0.01 low-pass of the speed at [state+0x20]) runs in fixed
+             1/60 s steps from a shared accumulator in the ship update (0x304ab0); 0x329920 then turns
+             the drawn ship's matrix by its angles [state+0x10]. Above 60 FPS it moves in 0, 1 or 2 steps
+             per frame, so the ship and the camera behind it jerk. The second copy of the ship update
+             (0x7b1850) steps it once per frame with a fixed 1/60, too fast above 60 FPS.
+             Both now call H with the frame time (H lives in the first site's old loop): nothing when
+             dt <= 0. A step samples the spline at t and then adds its argument to t, and its angles
+             came from the sample before that: both a frame behind, so each frame's tilt moved by the
+             last frame's dt and jittered (nose up and down while accelerating) whenever two frame times
+             differ. H adds dt to t [state+0x80] itself and steps 0, and the step takes its angles
+             from this step's sample: the tilt is the hover at this frame's time. t only moves while the
+             hover was on (flag [state+0x454]): it is not wrapped while off. The speed passed in is
+             s + (v - s) * F(s60, 0.01) / 0.01 (HOVERK; C001 is the step's 0.01, s60 = dt * 59.999996),
+             so the step's 0.99/0.01 low-pass moves as at 60 FPS. The offset [state+0x0]
+             (read by 0x323880, x/y/z only), the difference of this sample and the last, is scaled by
+             (1/60) / dt, only when the step wrote it (above speed 80 it leaves it and the flag alone;
+             the resets zero it). The step itself already takes any dt: the menu ship previews
+             (0x4b8f60, 0x5a1d10) pass theirs.
+             H: rbx = state (ship+0x7810), xmm10 = dt; rsp = 8 mod 16 on entry, as after a call from
+             the first site (the second pushes rbx twice). CAVE (xmm1 = speed - s) is in the shield block
+             above. K is 1/60, STEP is 0x329620. -->
+        <Target Name="K" Address="0x00c5fcbc" Pattern="c5 aa 58 05 ?? ?? ?? ?? 49 8b 86 c8 75 00 00 c5 f8 2e 05 ?? ?? ?? ?? c5 fa 10 88 b8 04 00 00 c5 fa 11 05 ?? ?? ?? ?? 72 47 c5 fa 11 4d 90 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 10 05 ?? ?? ?? ?? c5 fa 10 4d 90 48 89 df e8 ?? ?? ?? ?? c5 fa 10 05 ?? ?? ?? ?? c5 fa 58 05 ?? ?? ?? ?? c5 f8 2e 05 ?? ?? ?? ?? c5 fa 11 05 ?? ?? ?? ?? 73 c9 31 d2 48 89 df 4c 89 fe e8 ?? ?? ?? ??" At="19" Ref="1"/>
+        <Target Name="STEP" Address="0x00729620" Pattern="c5 aa 58 05 ?? ?? ?? ?? 49 8b 86 c8 75 00 00 c5 f8 2e 05 ?? ?? ?? ?? c5 fa 10 88 b8 04 00 00 c5 fa 11 05 ?? ?? ?? ?? 72 47 c5 fa 11 4d 90 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 10 05 ?? ?? ?? ?? c5 fa 10 4d 90 48 89 df e8 ?? ?? ?? ?? c5 fa 10 05 ?? ?? ?? ?? c5 fa 58 05 ?? ?? ?? ?? c5 f8 2e 05 ?? ?? ?? ?? c5 fa 11 05 ?? ?? ?? ?? 73 c9 31 d2 48 89 df 4c 89 fe e8 ?? ?? ?? ??" At="74" Ref="1"/>
+        <!-- The external cameras' lean with acceleration (0x322fd0): A [ship+0x7670] gathers 0.2 times each
+             frame's velocity change and decays by 10 * dt; the camera offset O [ship+0x7680] (0x323880 adds
+             it to the camera) is pushed every frame by up * (0.1 * (A . up') - 0.05 * (A . forward)) and
+             decays by 15 * dt. The push has no dt, so O settled at push / (15 * dt): above 60 FPS the
+             camera moved further when speeding up and slowing down (4.9x the 60 FPS travel measured at
+             240 FPS), and with uneven frame times it bounced at the end of it. Each frame is now the exact
+             step of the 60 FPS game for its frame time (the input held over the frame), s = dt * 60 with
+             dt clamped to 0.1: with gA = 1 - (5/6)^s and gO = 1 - 0.75^s, A takes 0.2 * gA / (10 dt) of
+             the velocity change and keeps 1 - gA of itself; O takes 4 * gO of the stock push and keeps
+             1 - gO. At 60 FPS both are the stock steps; the steady lean is the same at any frame rate and so
+             is how fast it settles (a linear 10 dt and 15 dt were 9 % and 15 % slow above 60 FPS).
+             LEANC, in place of A's multiply by 0.2 (C02), scales the velocity change and leaves
+             xmm0 = (gO/15, gO/15, gO/15, dt): the push multiplies by lanes 0-2, with 6 and -3 in place of
+             0.1 and -0.05 (4 * gO times the stock push), and the decay at 0x32330d multiplies [rbp-0x70] by
+             15 (C15): gO. The jolt and A's decay (LEAN2) read dt from lane 3, [rbp-0x64]; nothing else reads
+             [rbp-0x70]. To make room for the push's multiply, vpermilpd xmm7,xmm5,1 is vmovhlps (only lane 0
+             is used) and two vpermilps are vshufps with both sources the same. CAMK05 and CAMK10 are those
+             two constant vectors, read only here. -->
+        <Target Name="CAMK05" Address="0x00c48390" Pattern="c5 f8 10 30 48 8b 82 c8 00 00 00 c4 e2 79 18 50 0c c4 c1 48 59 f9 c5 e8 59 d1 c5 c0 58 d2 c4 e3 79 05 fd 01 c5 d8 58 d2 c5 f8 29 95 70 ff ff ff c5 fa 16 d5 c4 e3 51 21 ef 1c c5 d0 14 d2 c4 e3 79 04 ee 64 c5 e8 59 ed c4 e3 79 04 f5 00 c4 e3 79 04 fd 55 c4 e3 79 04 ed aa c5 c0 58 f6 c5 c8 58 ed c5 f0 59 35 ?? ?? ?? ?? c4 e3 79 04 ed 00 c5 c8 59 ed c4 e3 79 04 f1 64 c5 f0 59 0d ?? ?? ?? ??" At="102" Ref="1"/>
+        <Target Name="CAMK10" Address="0x00c483a0" Pattern="c5 f8 10 30 48 8b 82 c8 00 00 00 c4 e2 79 18 50 0c c4 c1 48 59 f9 c5 e8 59 d1 c5 c0 58 d2 c4 e3 79 05 fd 01 c5 d8 58 d2 c5 f8 29 95 70 ff ff ff c5 fa 16 d5 c4 e3 51 21 ef 1c c5 d0 14 d2 c4 e3 79 04 ee 64 c5 e8 59 ed c4 e3 79 04 f5 00 c4 e3 79 04 fd 55 c4 e3 79 04 ed aa c5 c0 58 f6 c5 c8 58 ed c5 f0 59 35 ?? ?? ?? ?? c4 e3 79 04 ed 00 c5 c8 59 ed c4 e3 79 04 f1 64 c5 f0 59 0d ?? ?? ?? ??" At="126" Ref="1"/>
+        <!-- The camera jolt on wall hits and landings (0x322fd0): each frame the shake strength S
+             [ship+0x69d4] is that frame's strongest contact, and the camera gets a new random offset
+             [ship+0x7690] = +-16 * 0.0002 * S per axis. At 60 FPS a hit shakes for 1/60 s, re-rolled every
+             1/60 s while scraping; above 60 FPS each shake lasts one short frame and a scrape buzzes. The
+             block now holds each offset for 1/60 s (timer T at [ship+0x7838], in a gap of the hover state
+             that nothing reads; the race resets write it): T -= dt; while T > 0 the offset stays; else no
+             contact clears it, a contact rolls a new one and adds 1/60 to T, or sets T = 1/60 when T had
+             already run out the frame before: while scraping the offsets change every 1/60 s on average at
+             any frame rate (with T = 1/60 each time, every 2 or 3 frames at 144 FPS: 48 a second). dt is
+             lane 3 of [rbp-0x70] ([rbp-0x64], see the lean). At 60 FPS that is the original.
+             One rand() gives the three signs (bits 5, 6 and 7) where the game called it three times, in a
+             loop over the three axes. RAND is rand (0x7febe0), K2 the 0.0002 the game reads here.
+             The 22 bytes this frees (after the jmp to HOLD) are unreachable nops. -->
+        <!-- Other players' ships online (0x3203b0, inlined again in 0x7b1850): each frame the ship's
+             velocity [body+0xa0] is blended with the one its network records give, (1 - f) * target +
+             f * velocity, with f = 0.8 (0.64 in the copy) squared once for each 1/60 s past the first:
+             0.8^(2^n) where 60 FPS steps give 0.8^(n+1), and 0.8 every frame above 60 FPS, so the ships
+             snapped to their targets faster. VBLEND (xmm2 = dt, xmm4 = f) makes f = f^(dt * 59.999996) in
+             place of the loop: the stock value at 60 FPS, the 60 FPS curve at any frame rate; it changes
+             only xmm4. The code after overwrites xmm0, xmm3, xmm5 and xmm6 (which the loop wrote) before
+             reading them, on both paths. -->
+        <Target Name="RAND" Address="0x00bfebe0" Pattern="e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 c3 79 0c 87 90 76 00 00 0e c4 c1 78 11 87 90 76 00 00 e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 c4 c1 78 10 97 90 76 00 00 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 e3 69 21 c0 10 c4 c1 78 11 87 90 76 00 00 e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 c5 f8 28 7d 80 31 c9 49 8d b7 20 76 00 00 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 c1 78 10 8f 90 76 00 00 c4 e3 71 21 c0 20 c4 c1 78 11 87 90 76 00 00" At="1" Ref="1"/>
+        <Target Name="K2" Address="0x00c5ff74" Pattern="e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 c3 79 0c 87 90 76 00 00 0e c4 c1 78 11 87 90 76 00 00 e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 c4 c1 78 10 97 90 76 00 00 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 e3 69 21 c0 10 c4 c1 78 11 87 90 76 00 00 e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 c5 f8 28 7d 80 31 c9 49 8d b7 20 76 00 00 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 c1 78 10 8f 90 76 00 00 c4 e3 71 21 c0 20 c4 c1 78 11 87 90 76 00 00" At="9" Ref="1"/>
+        <Target Name="CAVE" Address="0x0079cf14" Pattern="c5 ea 59 0d ?? ?? ?? ?? 48 c1 e8 20 c5 fa 11 95 00 ff ff ff c5 f9 6e c0 c5 fa 2c c1 85 c0 0f 8e 9b 00 00 00 c4 c1 78 10 a6 80 00 00 00 c4 c1 78 10 8e 90 00 00 00 c4 c2 79 18 96 a0 00 00 00" At="123"/>
+        <Target Name="H" Address="0x0070640e" Pattern="c5 aa 58 05 ?? ?? ?? ?? 49 8b 86 c8 75 00 00 c5 f8 2e 05 ?? ?? ?? ?? c5 fa 10 88 b8 04 00 00 c5 fa 11 05 ?? ?? ?? ?? 72 47 c5 fa 11 4d 90 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 10 05 ?? ?? ?? ?? c5 fa 10 4d 90 48 89 df e8 ?? ?? ?? ?? c5 fa 10 05 ?? ?? ?? ?? c5 fa 58 05 ?? ?? ?? ?? c5 f8 2e 05 ?? ?? ?? ?? c5 fa 11 05 ?? ?? ?? ?? 73 c9 31 d2 48 89 df 4c 89 fe e8 ?? ?? ?? ??" At="7"/>
+        <Target Name="C60" Address="0x00c60c10" Pattern="c5 ea 59 0d ?? ?? ?? ?? 48 c1 e8 20 c5 fa 11 95 00 ff ff ff c5 f9 6e c0 c5 fa 2c c1 85 c0 0f 8e 9b 00 00 00 c4 c1 78 10 a6 80 00 00 00 c4 c1 78 10 8e 90 00 00 00 c4 c2 79 18 96 a0 00 00 00" At="4" Ref="1"/>
+        <Target Name="X" Address="0x0079cf29" Pattern="c5 ea 59 0d ?? ?? ?? ?? 48 c1 e8 20 c5 fa 11 95 00 ff ff ff c5 f9 6e c0 c5 fa 2c c1 85 c0 0f 8e 9b 00 00 00 c4 c1 78 10 a6 80 00 00 00 c4 c1 78 10 8e 90 00 00 00 c4 c2 79 18 96 a0 00 00 00" At="144"/>
+        <Target Name="F" Address="0x00b89b35" Pattern="c5 fa 59 05 ?? ?? ?? ?? 48 89 fb c5 fa 2c c0 85 c0 7e 3f c5 fa 10 83 80 00 00 00 c5 fa 10 8b 84 00 00 00 c5 fa 10 93 88 00 00 00 66 66 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c5 fa 11 83 80 00 00 00" At="31"/>
+        <Target Name="BLEND" Address="0x0079cf4b" Pattern="c5 ea 59 0d ?? ?? ?? ?? 48 c1 e8 20 c5 fa 11 95 00 ff ff ff c5 f9 6e c0 c5 fa 2c c1 85 c0 0f 8e 9b 00 00 00 c4 c1 78 10 a6 80 00 00 00 c4 c1 78 10 8e 90 00 00 00 c4 c2 79 18 96 a0 00 00 00" At="178"/>
+        <Target Name="VBLEND" Address="0x007078dc" Pattern="c5 da 59 05 ?? ?? ?? ?? c5 fa 2c c0 85 c0 7e 38 c5 fa 10 83 c0 87 00 00 c5 fa 10 8b c4 87 00 00 c5 fa 10 93 c8 87 00 00 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c5 fa 11 83 c0 87 00 00" At="28"/>
+        <Target Name="HOVERK" Address="0x00bb55fb" Pattern="c5 da 59 05 ?? ?? ?? ?? c5 fa 2c c0 85 c0 7e 39 c5 fa 10 83 c0 87 00 00 c5 fa 10 8b c4 87 00 00 c5 fa 10 93 c8 87 00 00 66 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c5 fa 11 83 c0 87 00 00" At="28"/>
+        <Target Name="GA" Address="0x00786dac" Pattern="c5 fa 59 05 ?? ?? ?? ?? c5 fa 2c c0 85 c0 7e 39 c4 c1 7a 10 87 fc 03 00 00 c4 c1 7a 10 8f 00 04 00 00 c4 c1 7a 10 97 04 04 00 00 0f 1f 44 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c4 c1 7a 11 87 fc 03 00 00" At="28"/>
+        <Target Name="GO" Address="0x0075e983" Pattern="c5 f2 59 0d ?? ?? ?? ?? c5 fa 2c c1 85 c0 7e 42 c4 c1 7a 10 8e 14 02 00 00 c4 c1 7a 10 96 18 02 00 00 c4 c1 7a 10 9e 1c 02 00 00 66 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 c5 ea 5c e1 ff c8 c5 da 59 e3 c5 da 58 c9 75 f0 c4 c1 7a 11 8e 14 02 00 00" At="28"/>
+        <Target Name="GC" Address="0x007218f2" Pattern="c5 fa 10 25 ?? ?? ?? ?? c4 c1 7a 11 81 28 77 00 00 c5 f8 28 c2 c5 f8 2e 05 ?? ?? ?? ?? 76 29 c5 fa 10 2d ?? ?? ?? ?? c5 fa 10 35 ?? ?? ?? ?? 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 58 c5 c5 da 59 e4 c5 f8 2e c6 77 f2" At="28"/>
+        <Target Name="GC_bcast" Address="0x007218f7" Pattern="c5 fa 10 25 ?? ?? ?? ?? c4 c1 7a 11 81 28 77 00 00 c5 f8 28 c2 c5 f8 2e 05 ?? ?? ?? ?? 76 29 c5 fa 10 2d ?? ?? ?? ?? c5 fa 10 35 ?? ?? ?? ?? 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 58 c5 c5 da 59 e4 c5 f8 2e c6 77 f2" At="33"/>
+        <Target Name="LEANC" Address="0x00b36775" Pattern="c5 da 59 0d ?? ?? ?? ?? 48 89 8d 88 fe ff ff 48 89 c1 48 c1 e9 20 c5 f9 6e c1 c5 7a 2c e9 c5 fa 58 c4 45 85 ed c4 c1 7a 11 84 24 dc 00 00 00 7e 48 c4 c1 7a 10 84 24 f0 00 00 00 c4 c1 7a 10 8c 24 f4 00 00 00 c4 c1 7a 10 94 24 f8 00 00 00 44 89 e9 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c9 c5 e2 59 da c5 e2 58 c0 75 f0 c4 c1 7a 11 84 24 f0 00 00 00" At="68"/>
+        <Target Name="LEANC2" Address="0x00bb6260" Pattern="c5 fa 10 25 ?? ?? ?? ?? c5 78 55 f9 c5 ea 58 83 28 77 00 00 c5 fa 11 83 28 77 00 00 76 22 c5 fa 10 1d ?? ?? ?? ?? c5 fa 10 2d ?? ?? ?? ?? c5 f8 28 f2 c5 ca 58 f3 c5 da 59 e4 c5 f8 2e f5 77 f2" At="35"/>
+        <Target Name="LEAN2" Address="0x00721906" Pattern="c5 fa 10 25 ?? ?? ?? ?? c4 c1 7a 11 81 28 77 00 00 c5 f8 28 c2 c5 f8 2e 05 ?? ?? ?? ?? 76 29 c5 fa 10 2d ?? ?? ?? ?? c5 fa 10 35 ?? ?? ?? ?? 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 58 c5 c5 da 59 e4 c5 f8 2e c6 77 f2" At="48"/>
+        <Target Name="C001" Address="0x00c60050" Pattern="c5 f2 59 0d ?? ?? ?? ?? c5 fa 10 53 20 c5 ea 59 15 ?? ?? ?? ?? c5 ea 58 c9" At="4" Ref="1"/>
+        <Target Name="C02" Address="0x00c48370" Pattern="c5 e0 59 15 ?? ?? ?? ?? c4 c1 68 58 af 70 76 00 00 c4 c3 51 0c d8 08 c4 c1 78 11 9f 70 76 00 00" At="4" Ref="1"/>
+        <Target Name="C15" Address="0x00c483b0" Pattern="c5 f8 28 55 90 c5 e8 59 15 ?? ?? ?? ?? c5 f8 58 45 a0" At="9" Ref="1"/>
+        <PatchList>
+            <!-- Shield.cpp (0x39ce60): colour and size -->
+            <Line Type="bytes" Address="0x0079ce99" Pattern="c5 ea 59 0d ?? ?? ?? ?? 48 c1 e8 20 c5 fa 11 95 00 ff ff ff c5 f9 6e c0 c5 fa 2c c1 85 c0 0f 8e 9b 00 00 00 c4 c1 78 10 a6 80 00 00 00 c4 c1 78 10 8e 90 00 00 00 c4 c2 79 18 96 a0 00 00 00" At="0" Value="c5ea590d{rel:C60:0}48c1e820c5fa119500ffffffc5f96ec0c5f828d9c4c17a1096a0000000e8{rel:F:0}c5e8c6d200c4c17810a680000000c4c178108e90000000c5f05cccc5f059cac5d858e1c4c17811a68000000052498d96a4000000e84f0000005ac5f829a5f0feffffc5e973dc08c5f82995e0feffffeb66488b83b8fdffffc5fa1088b8040000c5f25c4b20c3d9eedff17315d9f1d9c0d9fcdce9d9c9d9f0d9e8dec1d9fdddd9c3ddd8ddd8d9eec3c5fa105208e8{rel:F:0}c5fa105a04c5e25c1ac5e259dac5e2581ac5fa111ac3909090909090909090909090909090"/>
+            <!-- Ship update (0x304ab0): the weapon-absorb effect's fade [ship+0x87c0], the material value of AbsorbEffect.vex and vr_absorbinternal_cockpit.vex -->
+            <Line Type="bytes" Address="0x007078c8" Value="52488d93c0870000c5f828d8e8{rel:BLEND:0}5aeb2c4883ec08c5fa111424d90424d80d{rel:C60:0}c5fa112424d90424e8{rel:X:0}d91c24c5fa1024244883c408c3" Pattern="c5 da 59 05 ?? ?? ?? ?? c5 fa 2c c0 85 c0 7e 38 c5 fa 10 83 c0 87 00 00 c5 fa 10 8b c4 87 00 00 c5 fa 10 93 c8 87 00 00 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c5 fa 11 83 c0 87 00 00" At="8"/>
+            <!-- The same in the second copy of the ship update (0x7b1850) -->
+            <Line Type="bytes" Address="0x00bb55e7" Value="52488d93c0870000c5f828d8e8{rel:BLEND:0}5aeb2dc5aa591d{rel:C60:0}c5fa1015{rel:C001:0}e8{rel:F:0}c5ea5e15{rel:C001:0}c5f259cac5f2584b20c3909090909090" Pattern="c5 da 59 05 ?? ?? ?? ?? c5 fa 2c c0 85 c0 7e 39 c5 fa 10 83 c0 87 00 00 c5 fa 10 8b c4 87 00 00 c5 fa 10 93 c8 87 00 00 66 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c5 fa 11 83 c0 87 00 00" At="8"/>
+            <!-- Detonator bomb explosion (0x35cff0): [obj+0x214] -->
+            <Line Type="bytes" Address="0x0075e96f" Value="52498d9614020000c5f828d9e8{rel:BLEND:0}5aeb364883ec18c5f8111c24c5ea591d{rel:C60:0}c5fa1015{rel:K:0}c5ea5915{rel:C15:0}e8{rel:F:0}c5ea5e15{rel:C15:0}e9{rel:GC_bcast:0}909090" Pattern="c5 f2 59 0d ?? ?? ?? ?? c5 fa 2c c1 85 c0 7e 42 c4 c1 7a 10 8e 14 02 00 00 c4 c1 7a 10 96 18 02 00 00 c4 c1 7a 10 9e 1c 02 00 00 66 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 c5 ea 5c e1 ff c8 c5 da 59 e3 c5 da 58 c9 75 f0 c4 c1 7a 11 8e 14 02 00 00" At="8"/>
+            <!-- Bomb smoke ring (0x385830): [obj+0x3fc] -->
+            <Line Type="bytes" Address="0x00786d98" Value="52498d97fc030000c5f828d8e8{rel:BLEND:0}5aeb2d4883ec18c5f8111c24c5ea591d{rel:C60:0}c5fa1015{rel:K:0}c4c16a59d1e9{rel:GC:0}90909090909090909090" Pattern="c5 fa 59 05 ?? ?? ?? ?? c5 fa 2c c0 85 c0 7e 39 c4 c1 7a 10 87 fc 03 00 00 c4 c1 7a 10 8f 00 04 00 00 c4 c1 7a 10 97 04 04 00 00 0f 1f 44 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c4 c1 7a 11 87 fc 03 00 00" At="8"/>
+            <!-- Boost and flare shapes (0x7366c0): [obj+0xf0]; the step count stays in r13d, and the jle before the loop is covered too -->
+            <Line Type="bytes" Address="0x00b36760" Value="52498d9424f0000000c5f828d9e8{rel:BLEND:0}5aeb35c5f828d0e8{rel:GA:0}c5e85ed0c4c1685ed1c4c1685fd0c5e85915{rel:C02:0}c5e059eae9{rel:LEANC2:0}90909090909090909090909090" Pattern="c5 da 59 0d ?? ?? ?? ?? 48 89 8d 88 fe ff ff 48 89 c1 48 c1 e9 20 c5 f9 6e c1 c5 7a 2c e9 c5 fa 58 c4 45 85 ed c4 c1 7a 11 84 24 dc 00 00 00 7e 48 c4 c1 7a 10 84 24 f0 00 00 00 c4 c1 7a 10 8c 24 f4 00 00 00 c4 c1 7a 10 94 24 f8 00 00 00 44 89 e9 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c9 c5 e2 59 da c5 e2 58 c0 75 f0 c4 c1 7a 11 84 24 f0 00 00 00" At="47"/>
+            <!-- _UNDERWATER sound effect (0x789b10): [obj+0x80] -->
+            <Line Type="bytes" Address="0x00b89b21" Value="52488d9380000000c5f828d8e8{rel:BLEND:0}5aeb334883ec08c5fa111c24d90424c5fa111424d9e8d82424e8{rel:X:0}d9e8dee1d91c24c5fa1014244883c408c390909090909090" Pattern="c5 fa 59 05 ?? ?? ?? ?? 48 89 fb c5 fa 2c c0 85 c0 7e 3f c5 fa 10 83 80 00 00 00 c5 fa 10 8b 84 00 00 00 c5 fa 10 93 88 00 00 00 66 66 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 c5 f2 5c d8 ff c8 c5 e2 59 da c5 e2 58 c0 75 f0 c5 fa 11 83 80 00 00 00" At="11"/>
+            <!-- Ship update (0x304ab0): idle hover, the accumulator loop replaced by a call to H (rbx is the state), then H -->
+            <Line Type="bytes" Address="0x00706407" Value="e802000000eb69c5f857c0c5782ed0765880bb54040000007410c5aa589380000000c5fa119380000000c5fa101d{rel:K:0}c4c1625edac5f97ed850e8{rel:CAVE:0}e8{rel:HOVERK:0}0f1f4000535fe8{rel:STEP:0}80bb5404000000740ec4e279180424c5f85903c5f8110359c3909090909090" Pattern="c5 aa 58 05 ?? ?? ?? ?? 49 8b 86 c8 75 00 00 c5 f8 2e 05 ?? ?? ?? ?? c5 fa 10 88 b8 04 00 00 c5 fa 11 05 ?? ?? ?? ?? 72 47 c5 fa 11 4d 90 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 10 05 ?? ?? ?? ?? c5 fa 10 4d 90 48 89 df e8 ?? ?? ?? ?? c5 fa 10 05 ?? ?? ?? ?? c5 fa 58 05 ?? ?? ?? ?? c5 f8 2e 05 ?? ?? ?? ?? c5 fa 11 05 ?? ?? ?? ?? 73 c9 31 d2 48 89 df 4c 89 fe e8 ?? ?? ?? ??" At="0"/>
+            <!-- The hover step (0x329620): its angles from this step's sample, not the last one (xmm1 = this, xmm0 = last, xmm0 = xmm1 - xmm0) -->
+            <Line Type="bytes" Address="0x00729882" Value="8c" Pattern="c5 f8 10 84 03 90 00 00 00 89 d0 c1 fa 05 c1 e8 1f 01 c2 6b c2 3c 29 c1 48 63 c1 48 c1 e0 04 c5 f8 10 8c 03 90 00 00 00 c5 f2 59 25 ?? ?? ?? ?? c5 fa 16 d1 c4 e3 79 05 d9 01 c5 f8 5c c1" At="3"/>
+            <Line Type="bytes" Address="0x007298a1" Value="84" Pattern="c5 f8 10 84 03 90 00 00 00 89 d0 c1 fa 05 c1 e8 1f 01 c2 6b c2 3c 29 c1 48 63 c1 48 c1 e0 04 c5 f8 10 8c 03 90 00 00 00 c5 f2 59 25 ?? ?? ?? ?? c5 fa 16 d1 c4 e3 79 05 d9 01 c5 f8 5c c1" At="34"/>
+            <Line Type="bytes" Address="0x007298b9" Value="c5f05cc0" Pattern="c5 f8 10 84 03 90 00 00 00 89 d0 c1 fa 05 c1 e8 1f 01 c2 6b c2 3c 29 c1 48 63 c1 48 c1 e0 04 c5 f8 10 8c 03 90 00 00 00 c5 f2 59 25 ?? ?? ?? ?? c5 fa 16 d1 c4 e3 79 05 d9 01 c5 f8 5c c1" At="58"/>
+            <!-- Camera lean (0x322fd0): the offset's push scaled by dt -->
+            <Line Type="bytes" Address="0x00723174" Value="c5d012fdc5d858d2c5f8299570ffffffc5fa16d5c4e35121ef1cc5d014d2c5e859d0c5c8c6ee64c5e859edc5d0c6f500c4e37904fd55" Pattern="c5 f8 10 30 48 8b 82 c8 00 00 00 c4 e2 79 18 50 0c c4 c1 48 59 f9 c5 e8 59 d1 c5 c0 58 d2 c4 e3 79 05 fd 01 c5 d8 58 d2 c5 f8 29 95 70 ff ff ff c5 fa 16 d5 c4 e3 51 21 ef 1c c5 d0 14 d2 c4 e3 79 04 ee 64 c5 e8 59 ed c4 e3 79 04 f5 00 c4 e3 79 04 fd 55 c4 e3 79 04 ed aa c5 c0 58 f6 c5 c8 58 ed c5 f0 59 35 ?? ?? ?? ?? c4 e3 79 04 ed 00 c5 c8 59 ed c4 e3 79 04 f1 64 c5 f0 59 0d ?? ?? ?? ??" At="30"/>
+            <Line Type="bytes" Address="0x00c48390" Target="CAMK05" Value="000040c0000040c0000040c0000040c0"/>
+            <Line Type="bytes" Address="0x00c483a0" Target="CAMK10" Value="0000c0400000c0400000c0400000c040"/>
+            <!-- Camera jolt (0x322fd0): each random offset held for 1/60 s -->
+            <Line Type="bytes" Address="0x0072323c" Value="c4c17a108f38780000c5f25c4d9cc4c17a118f38780000c5f857c0c5f82ec8771dc4c1782e87d4690000752ac4c178138790760000c4c17a118798760000eb7290909090909090909090909090909090909090909090c5f258559cc5fac2d201c5f054cac5f2580d{rel:K:0}c4c17a118f38780000e8{rel:RAND:0}89c2c5fa1005{rel:K2:0}c4c17a5987d4690000b90200000089d083e02083c0f0c5f22ac8c5f259c8c4c17a118c8f90760000d1eaffc979e0c4c178108790760000c5f8287d8031c9498db720760000" Pattern="e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 c3 79 0c 87 90 76 00 00 0e c4 c1 78 11 87 90 76 00 00 e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 c4 c1 78 10 97 90 76 00 00 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 e3 69 21 c0 10 c4 c1 78 11 87 90 76 00 00 e8 ?? ?? ?? ?? c5 fa 10 0d ?? ?? ?? ?? 83 e0 20 c5 f8 28 7d 80 31 c9 49 8d b7 20 76 00 00 83 c0 f0 c4 c1 72 59 8f d4 69 00 00 c5 f8 57 c0 c5 fa 2a c0 c5 f2 59 c0 c4 c1 78 10 8f 90 76 00 00 c4 e3 71 21 c0 20 c4 c1 78 11 87 90 76 00 00" At="0"/>
+            <!-- Online ships (0x3203b0): the velocity blend's factor 0.8^(dt * 60), then GC and LEAN2 -->
+            <Line Type="bytes" Address="0x007218eb" Value="e8{rel:VBLEND:0}eb2ce8{rel:F:0}c5e8c6d200c5f8101c244883c418c3c5f8c6d0ffe8{rel:GA:0}c5e859d3c5e05cc2c39090909090" Pattern="c5 fa 10 25 ?? ?? ?? ?? c4 c1 7a 11 81 28 77 00 00 c5 f8 28 c2 c5 f8 2e 05 ?? ?? ?? ?? 76 29 c5 fa 10 2d ?? ?? ?? ?? c5 fa 10 35 ?? ?? ?? ?? 66 66 2e 0f 1f 84 00 00 00 00 00 c5 fa 58 c5 c5 da 59 e4 c5 f8 2e c6 77 f2" At="21"/>
+            <!-- The same in the second copy of the ship update (0x7b1850): 0.64^(dt * 60), then LEANC2 -->
+            <Line Type="bytes" Address="0x00bb6259" Value="e8{rel:VBLEND:0}eb1dc5f828d0e8{rel:GO:0}c4e3690cc008c5f828d5c3909090909090909090" Pattern="c5 fa 10 25 ?? ?? ?? ?? c5 78 55 f9 c5 ea 58 83 28 77 00 00 c5 fa 11 83 28 77 00 00 76 22 c5 fa 10 1d ?? ?? ?? ?? c5 fa 10 2d ?? ?? ?? ?? c5 f8 28 f2 c5 ca 58 f3 c5 da 59 e4 c5 f8 2e f5 77 f2" At="28"/>
+            <!-- Camera lean (0x322fd0): A's share of the velocity change, and xmm0 = (gO/15, gO/15, gO/15, dt) -->
+            <Line Type="bytes" Address="0x00723136" Value="e8{rel:LEANC:0}909090" Pattern="c5 e0 59 15 ?? ?? ?? ?? c4 c1 68 58 af 70 76 00 00 c4 c3 51 0c d8 08 c4 c1 78 11 9f 70 76 00 00" At="0"/>
+            <!-- Camera lean: A's decay by gA -->
+            <Line Type="bytes" Address="0x00723220" Value="e8{rel:LEAN2:0}9090909090909090" Pattern="c4 c1 78 59 c1 c5 f8 59 c3 c5 e0 5c c0 c4 c3 79 0c c0 08 c4 c1 78 11 87 70 76 00 00" At="0"/>
+            <!-- Second copy of the ship update (0x7b1850): idle hover, dt from [rbp-0x124], the state from r12 in rbx -->
+            <Line Type="bytes" Address="0x00bb334d" Value="c5f8118b90000000c5f811b3a0000000c5f811bbb0000000c57a1095dcfeffff53534c89e3e8{rel:H:0}5b5b0f1f800000000090" Pattern="c5 f8 11 83 80 00 00 00 c5 fa 10 05 ?? ?? ?? ?? c5 f8 11 8b 90 00 00 00 c5 f8 11 b3 a0 00 00 00 c5 f8 11 bb b0 00 00 00 49 8b 87 c8 75 00 00 c5 fa 10 88 b8 04 00 00 e8 ?? ?? ?? ?? 31 d2 4c 89 e7 4c 89 f6 e8 ?? ?? ?? ??" At="8"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Bug Fix - Engine trail above 60 FPS" Note="After a boost pad, the engine flame and trail go back to normal at any frame rate. They fade with the timing of the 60 FPS game at any frame rate. Without it, above 60 FPS they stay in the boosted state, even when the ship stops (#123). Always on." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <!-- The flare and trail update (0x7366c0) moves its values in whole 1/60 s steps: n = (int)(dt * 59.999996),
+             then n times x += (target - x) * rate. Above 60 FPS n is 0 every frame. "Bug Fix - Effects above 60 FPS"
+             fixes the first loop ([obj+0xf0]); these are the next two:
+             A (0x736db0): [obj+0x124] chases xmm1 at the tweak rate [tweaks+0x130] (kept in xmm0 and [obj+0x12c]);
+             B (0x736e1a): the afterburner [obj+0x13c] chases [obj+0x140] at [obj+0x144] (a boost pad sets them,
+             0x3191bf), and [obj+0x130] decays by xmm0 per step; both original branches set [obj+0x134] = 0 and
+             [obj+0x138] = xmm0.
+             Each loop becomes one step of the exact factor F = 1 - (1 - rate)^s, s = dt * 60 (dt saved at
+             -0xc4(%rbp) at 0x7367ac): x += (target - x) * F(rate), y -= y * F(k). At 60 FPS it is the
+             original, at any frame rate the curve of the 60 FPS game. F (s in xmm6, rate in xmm2, the factor
+             back in xmm2) and X are this patch's own copy of the x87 factor of "Effects above 60 FPS".
+             One line covers A, the game's check between them (y = 1 when [obj+0x10c] is below 0.2, C1) and
+             B: rax = obj + 0x124 (the old loops counted in eax). xmm0 and xmm1 are kept for the code after;
+             xmm2-xmm7 are free there. In a patch of its own, so a game build where these sites differ keeps
+             "Effects above 60 FPS". C60 is the 59.999996 constant. -->
+        <Target Name="C60" Address="0x00c60c10" Pattern="c5 ea 59 0d ?? ?? ?? ?? 48 c1 e8 20 c5 fa 11 95 00 ff ff ff c5 f9 6e c0 c5 fa 2c c1 85 c0 0f 8e 9b 00 00 00 c4 c1 78 10 a6 80 00 00 00 c4 c1 78 10 8e 90 00 00 00 c4 c2 79 18 96 a0 00 00 00" At="4" Ref="1"/>
+        <Target Name="C1" Address="0x00c639c8" Pattern="c5 fa 10 15 ?? ?? ?? ?? c4 c1 78 2e 94 24 0c 01 00 00 73 0c" At="4" Ref="1"/>
+        <PatchList>
+            <Line Type="bytes" Address="0x00b36db0" Value="c4c17a108630010000498d842424010000c5fa114008c5fa10b53cffffffc5ca5935{rel:C60:0}c5f828d0e878000000c5fa1020c5f25cdcc5e259dac5da58e3c5fa1120c5fa1015{rel:C1:0}c5f82e50e87307c7400c0000803fc7401000000000c5fa114014c5fa105020e838000000c5fa106818c5fa10601cc5da5ce5c5da59e2c5d258ecc5fa116818c5f828d0e814000000c5fa10780cc5c259e2c5c25cfcc5fa11780ceb574883ec08c5fa113424d90424c5fa111424d9e8d82424e811000000d9e8dee1d91c24c5fa1014244883c408c3d9eedff17315d9f1d9c0d9fcdce9d9c9d9f0d9e8dec1d9fdddd9c3ddd8ddd8d9eec3909090909090909090" Pattern="45 85 ed c4 c1 7a 10 86 30 01 00 00 c4 c1 7a 11 84 24 2c 01 00 00 7e 32 c4 c1 7a 10 9c 24 24 01 00 00 44 89 e8 66 66 2e" At="0"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Bug Fix - Zone crash above 60 FPS" Note="Fixes a crash in HD Zone events at high frame rates (the HUD was drawn from a list the game was refilling). Always on." Author="nero" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <!-- Four pairs of 2D draw lists (0xed5dd0, 0xed5df0; not used on 2048 tracks) form a ring
+             between the game thread and the render thread. The game thread (0x5f2d30, 0x5f55e7) opens
+             slot NEXT [0xed5dc4], NEXT += 1, resets the lists (cursor 1, the next of their 3 buffers),
+             fills them and sets the ready flag [0xed67f8]. The render thread (0x665bb0), when the
+             flag is set, draws slot INDEX [0x9a80ac] (0x7f2ff0), INDEX += 1, and clears the flag.
+             A flag set again while the render thread is still drawing is cleared with it: that frame
+             is never drawn and INDEX falls one slot further behind NEXT. Above 60 FPS this happens
+             often, INDEX laps around the ring, and the game thread reopens the slot being drawn:
+             0x7f2ff0 read the old buffer with the new cursor, walked into vertex data and took
+             0x6000000000000000 for a draw object (0x7f34bb; Windows reports the non-canonical
+             address as ffffffffffffffff). The render thread now steps to the game thread's last
+             opened slot, INDEX = (NEXT - 1) & 3, in place of INDEX + 1: it draws the newest frame
+             once the flag is set after its fill and never falls behind. Same 17 bytes. -->
+        <Target Name="NEXT" Address="0x012d5dc4" Pattern="8d 40 01 83 e0 03 89 05 ?? ?? ?? ?? 41 0f b6 46 40" At="8" Ref="1"/>
+        <Target Name="INDEX" Address="0x00da80ac" Pattern="41 80 67 01 fb 8b 05 ?? ?? ?? ?? ff c0 83 e0 03 89 05 ?? ?? ?? ?? eb 07" At="18" Ref="1"/>
+        <PatchList>
+            <Line Type="bytes" Address="0x00a65e66" Pattern="41 80 67 01 fb 8b 05 ?? ?? ?? ?? ff c0 83 e0 03 89 05 ?? ?? ?? ?? eb 07" At="5" Value="8b 05 {rel:NEXT:0} ff c8 83 e0 03 89 05 {rel:INDEX:0}"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Bug Fix - Zone points above 60 FPS" Note="Zone races give their points by time, as the 60 FPS game: 60 a second at any frame rate. Without it the points grew with the frame rate (240 a second at 240 FPS). Always on." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <!-- The Zone update (0x2c938b) adds 1 point per frame: inc [r12+0x300cc]. The zone timer t
+             ([r12+0x300f8]) grows by dt ([rbp-0x2c]) right after; at 10 s it is set back to 0 and the
+             zone goes up. The inc becomes a call to CAVE, which adds (int)((t + dt) * 60) - (int)(t * 60):
+             60 points a second at any frame rate, the fraction carried in t itself (at most 1 point lost
+             per zone, when t is set back to 0). xmm0 is reloaded right after the call; rax and rcx are
+             saved. CAVE is the zero padding after the unwind table (.eh_frame_hdr ends at 0x963f9c,
+             the code segment at 0x96651c); K60 is its 60.0. -->
+        <Target Name="CAVE" Address="0x00d64000" Pattern="cc ff ff ff 90 03 ec ff e0 ff ff ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00" At="0x70"/>
+        <Target Name="K60" Address="0x00d64040" Pattern="cc ff ff ff 90 03 ec ff e0 ff ff ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00" At="0xb0"/>
+        <PatchList>
+            <Line Type="bytes" Address="0x00d64000" Target="CAVE" Value="5051c4c17a108424f8000300c5fa5905{rel:K60:0}c5fa2cc8c4c17a108424f8000300c5fa5845d4c5fa5905{rel:K60:0}c5fa2cc029c841018424cc0003005958c3"/>
+            <Line Type="bytes" Address="0x00d64040" Target="K60" Value="00007042"/>
+            <Line Type="bytes" Address="0x006c938b" Pattern="41 ff 84 24 cc 00 03 00 c5 fa 10 45 d4 c4 c1 7a 58 84 24 f8 00 03 00" Value="e8{rel:CAVE:0}0f1f00"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Bug Fix - Model slots" Note="Fixes a crash while a race loads (2048 Unity Square, Empire Climb): the game's list of loaded models was full. Always on." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="true">
+        <!-- Loaded models (rcsmodel, PS4.MaterialTable.inl) take a slot of a .bss table of 1396 entries
+             of 0x360 bytes at 0xedf3e0 (in use: byte +0x114; count 0xedf3c4). 0x6265a0 scans for a
+             free slot and returns -1 when none is left; 0x75a070 keeps that index in the object
+             ([obj+0x3f38]) and 0x7b87d1 then writes through it: a fault in the loading screen
+             (#96 Unity Square, #41 Empire Climb; a 2048 race takes ~650 slots, the menu ~20).
+             The table moves to 4096 entries in the image's reserve (game_profiles.py): all 192
+             rip-relative leas to it (base, in-use byte of entry 0, the end the init loop at
+             0x625e90 stops at) point there, and the scan's limit is 4096. The copy starts one
+             entry into the reserve: 0x491ffa reads entry -1 for a model without a slot. -->
+        <Target Name="slots" Address="0x012df3e0" Pattern="89 c2 48 63 c2 48 8d 1d ?? ?? ?? ?? c5 f8 57 c0" At="8" Ref="1"/>
+        <Table Target="slots" Size="0x126780" Entry="0x360" Count="4096" Refs="192"/>
+        <PatchList>
+            <Line Type="bytes" Address="0x00a26606" Pattern="48 81 c1 60 03 00 00 ba ff ff ff ff 48 3d 74 05 00 00 72 e4" At="14" Value="00 10 00 00"/>
         </PatchList>
     </Metadata>
     <Metadata Title="WipEout Omega Collection" Name="Cheat - Unlock all HD and Fury events" Note="Every event of the HD and HD Fury campaigns is open: the game counts 99998 campaign points. Nothing is written to your save; off, the events need your own points again." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
@@ -578,7 +1224,7 @@
             <Line Type="bytes" Address="0x007f5406" Value="31db42895ca8fc" Pattern="45 85 ed 0f 84 af 00 00 00 85 db 0f 84 a7 00 00 00 48 8b 05 ?? ?? ?? ?? 41 ff cd 42 89 1c a8 e9 94 00 00 00" At="24"/>
         </PatchList>
     </Metadata>
-    <Metadata Title="WipEout Omega Collection" Name="Cheat - Unlock all ships" Note="Every HD, HD Fury and 2048 ship and livery is open (not the VR versions, nor the Tigron and Van-Uber DLC teams), and other menu items with the same rules. Nothing is written to your save." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+    <Metadata Title="WipEout Omega Collection" Name="Cheat - Unlock all ships" Note="Every HD, HD Fury and 2048 ship and livery is open, Tigron included (not the VR versions, nor the Van-Uber DLC team), and other menu items with the same rules. Nothing is written to your save." Author="AbdelmoumenDeghbouche" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
         <!-- PI_Item.cpp unlock rules (plugins/teams/Definition.xml: <Unlock locked="true" team=".."
              MedalCountHD="87"/>, loyalty="4000", ...): the parser at 0x3f8880 keeps each rule's text in
              the item's condition (+0x60 Grid, +0x70 MedalCount, +0x78 HD, +0x80 FURY, +0x88 TimePlayed, +0x90 Loyalty).
@@ -599,6 +1245,27 @@
             <!-- WipEout 2048 ships (SP.xml shipData: m_pCampaignUnlock, m_rankUnlock): the lookup at 0x5a3650
                  says open when the ship is already marked open (jne); always taking that jump opens all 20. -->
             <Line Type="bytes" Address="0x009a36ee" Value="eb" Pattern="85 c0 0f 85 ?? ?? ?? ?? 41 80 7f 4c 00 b0 01 75 7d 49 8b 47 40 48 85 c0 74 0c 83 b8 c0 03 00 00 02 41 0f 9f 47 4c" At="15"/>
+            <!-- Tigron (no rule in Definition.xml, earned in play): the team check at 0x3f9660 opens it
+                 when the count from 0x3e88c0 is above 4 (cmp eax,4; setg r13b). mov r13b,1 opens it. -->
+            <Line Type="bytes" Address="0x007f9b4d" Value="41b501 0f1f4000" Pattern="31 ff be ff ff ff ff ba ff ff ff ff e8 ?? ?? ?? ?? 83 f8 04 41 0f 9f c5 44 89 e8" At="17"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Cheat - Van Uber team (owned DLC)" Note="The Van Über team DLC (unlock-only, no package) is open, for players whose PSN account owns it: the port has no PSN entitlement. Nothing is written to your save." Author="ahmanwoods" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <!-- The Van Uber check at 0x63afd0 asks sceAppContentGetEntitlementKey for the region's
+             WIPEOUTVANUBERxx label and owns the team when the key matches the one in the eboot
+             (memcmp, 16 bytes). Jumping from the call's result to the owned path (bl=1 at 0x63b0a7)
+             skips both tests; the key itself is never needed. -->
+        <PatchList>
+            <Line Type="bytes" Address="0x00a3b07c" Value="eb29" Pattern="31 ff 31 db e8 ?? ?? ?? ?? 85 c0 0f 85 ?? ?? ?? ?? 48 8d 35 ?? ?? ?? ?? 48 8d bd f0 fe ff ff ba 10 00 00 00 e8" At="9"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="WipEout Omega Collection" Name="Cheat - VR ships outside VR" Note="The VR HD and VR Fury liveries can be picked without PlayStation VR, once unlocked. Nothing is written to your save." Author="ahmanwoods" PatchVer="1.0" AppVer="01.00" AppElf="eboot.bin" isEnabled="false">
+        <!-- Team select (0x5a89d0) marks a VR-only livery (+0x74d) that is unlocked as "VR only" (+0x1900
+             per slot) when the game is not in VR mode (0x1047e20 bit 0); that mark refuses the choice
+             (0x5a5346, 0x5a79b1) and shows the VR warning (0x5a7e3b). Never setting the mark leaves the
+             livery like any other. -->
+        <PatchList>
+            <Line Type="bytes" Address="0x009aa1e7" Value="eb" Pattern="41 80 bd 4d 07 00 00 00 0f 94 c0 0a 85 ?? ?? ?? ?? a8 01 75 1d 4a 63 84 bb b0 01 00 00 4a 8d 0c 33 8a 94 08 a0 16 00 00 80 f2 01 88 94 08 00 19 00 00" At="19"/>
         </PatchList>
     </Metadata>
 </Patch>

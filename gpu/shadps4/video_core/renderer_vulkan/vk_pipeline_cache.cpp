@@ -26,6 +26,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_compile_policy.h"
 #include "video_core/renderer_vulkan/vk_depth_stencil_state.h"
 #include "video_core/renderer_vulkan/motion_history.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
@@ -230,6 +231,11 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
                 : 1;
         info.hw.fs.z_export_format = regs.z_export_format;
         info.hw.fs.motion_vectors = sel.motion;
+        // As sampleShadingEnable (vk_graphics_pipeline.cpp; ps_iter_samples is 0 there
+        // without multisampling, where shading per sample changes nothing).
+        info.hw.fs.per_sample_shading =
+            !LightingTest::Current().shading && regs.eqaa.ps_iter_samples != 0 &&
+            (regs.ps_input_addr.persp_sample_ena || regs.ps_input_addr.linear_sample_ena);
         u8 stencil_ref_export_enable = regs.depth_shader_control.stencil_op_val_export_enable |
                                        regs.depth_shader_control.stencil_test_val_export_enable;
         info.hw.fs.mrtz_mask = regs.depth_shader_control.z_export_enable |
@@ -445,6 +451,31 @@ struct PhaseTimer {
     }
     ~PhaseTimer() { Stop(); }
 };
+// gow3 (#154): a draw whose shader or pipeline is compiling in the background waits for it a
+// little before it is skipped. Most builds take 1-3 ms (the driver keeps its own cache), and the
+// skipped draws showed as missing objects and surfaces when a race started; with every shader
+// option off (all built on this thread) a player saw none. Up to 10 ms per draw and 30 ms in
+// any 100 ms, so a burst of new shaders still cannot freeze the game.
+// ponytail: fixed budget, make it a setting if players need another one.
+template <typename Job>
+bool GraceWait(const Job& job) {
+    using namespace std::chrono;
+    static steady_clock::time_point window{};
+    static nanoseconds used{};
+    const auto now = steady_clock::now();
+    if (now - window > milliseconds(100)) {
+        window = now;
+        used = {};
+    }
+    const nanoseconds left = std::min<nanoseconds>(milliseconds(10), milliseconds(30) - used);
+    if (left <= nanoseconds(0)) {
+        return false;
+    }
+    PhaseTimer waiting{g_gow3_compile_wait_ns};
+    const bool ready = job.WaitFor(left);
+    used += steady_clock::now() - now;
+    return ready;
+}
 struct CompileTimer {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     ~CompileTimer() {
@@ -585,7 +616,8 @@ void PipelineCache::PublishShaders(bool wait) {
             build->spec.info = &program->info;
             RegisterShaderMeta(program->info, build->spec.fetch_shader_data, build->spec,
                                perm_hash, build->permutation);
-            program->AddPermut(build->module, std::move(build->spec));
+            program->InsertPermut(build->module, std::move(build->spec), build->permutation);
+            disk_stats.compiled += DiskShadersActive();
             build->module = nullptr;
             program->pending.reset();
         }
@@ -611,7 +643,10 @@ void PipelineCache::PublishGraphics(bool wait) {
         }
         const auto key = it.key();
         build->pipeline->PublishStages(build->live_infos);
-        RegisterPipelineData(key, std::hash<GraphicsPipelineKey>{}(key), build->data);
+        const auto hash = std::hash<GraphicsPipelineKey>{}(key);
+        if (NewPipelineKey(fmt::format("g_{:#018x}", hash))) {
+            RegisterPipelineData(key, hash, build->data);
+        }
         graphics_pipelines.emplace(key, std::move(build->pipeline));
         ++num_new_pipelines;
         it = pending_graphics.erase(it);
@@ -636,7 +671,10 @@ void PipelineCache::FinishCompilations() {
 }
 
 bool PipelineCache::AsyncCompilation() const {
-    return compiler && Gow3Settings::Get().async_shaders.load(std::memory_order_relaxed);
+    // gow3: the workers only while this launch is compiling for real (vk_compile_policy.h).
+    return compiler &&
+           g_compile_policy.Background(CompilePolicy::Now(),
+                                       Gow3Settings::Get().async_shaders.load(std::memory_order_relaxed));
 }
 
 void PipelineCache::SeedWorkerCaches() {
@@ -707,6 +745,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     PublishShaders();
     PublishGraphics();
     PumpWarmUp();
+    ReportDiskShaders();
     used_prepared = nullptr;
     if (prepared) {
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
@@ -715,18 +754,36 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
     }
     sel.draw_indirect_params = params;
-    if (!RefreshGraphicsKey(sel)) {
+    bool refreshed = RefreshGraphicsKey(sel);
+    if (!refreshed && sel.compilation_pending && !pending_programs.empty()) {
+        // gow3 (#154): the shaders this draw waits for are among the pending ones.
+        bool ready = true;
+        for (const auto* program : pending_programs) {
+            if (program->pending && !GraceWait(program->pending->job)) {
+                ready = false;
+                break;
+            }
+        }
+        PublishShaders();
+        if (ready) {
+            refreshed = RefreshGraphicsKey(sel);
+        }
+    }
+    if (!refreshed) {
         if (sel.compilation_pending) {
             ++g_gow3_pending_draws;
         }
         return nullptr;
     }
-    if (AsyncCompilation() && !sel.regs->stage_enable.hs_en && !EmulatorSettings.IsShaderCollect()) {
-        const auto found = graphics_pipelines.find(sel.graphics_key);
-        if (found != graphics_pipelines.end()) {
-            return found->second.get();
-        }
-        if (!pending_graphics.contains(sel.graphics_key) && compiler->HasCapacity()) {
+    if (const auto found = graphics_pipelines.find(sel.graphics_key);
+        found != graphics_pipelines.end()) {
+        return found->second.get();
+    }
+    // gow3: the policy decides only for a missing build; one a worker already has stays with it.
+    const bool background =
+        AsyncCompilation() && !sel.regs->stage_enable.hs_en && !EmulatorSettings.IsShaderCollect();
+    if (background || pending_graphics.contains(sel.graphics_key)) {
+        if (background && !pending_graphics.contains(sel.graphics_key) && compiler->HasCapacity()) {
             PhaseTimer capture{g_gow3_snapshot_ns};
             auto build = std::make_shared<AsyncGraphicsCompilation>();
             build->selection = sel;
@@ -756,6 +813,14 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                 pending_graphics.emplace(sel.graphics_key, std::move(build));
             }
         }
+        if (const auto pending = pending_graphics.find(sel.graphics_key);
+            pending != pending_graphics.end() && GraceWait(pending->second->job)) {
+            PublishGraphics(); // #154: built within the grace wait, drawn now
+            if (const auto found = graphics_pipelines.find(sel.graphics_key);
+                found != graphics_pipelines.end()) {
+                return found->second.get();
+            }
+        }
         ++g_gow3_pending_draws;
         return nullptr;
     }
@@ -770,7 +835,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
 
-        RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        if (NewPipelineKey(fmt::format("g_{:#018x}", pipeline_hash))) {
+            RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        }
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -803,7 +870,9 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                        *pipeline_cache, compute_key, *sel.infos[0],
                                                        sel.modules[0], sdata, false);
-        RegisterPipelineData(compute_key, sdata);
+        if (NewPipelineKey(fmt::format("c_{:#018x}", compute_key.value))) {
+            RegisterPipelineData(compute_key, sdata);
+        }
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -981,14 +1050,44 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     // Force all color samples to match depth samples to avoid unsupported MSAA configuration
     if (color_samples != 0) {
         const bool depth_mismatch = db_enabled && color_samples != key.depth_samples;
+        // gow3: VK_NV_framebuffer_mixed_samples (fewer colour than raster samples) does not
+        // allow sample shading. A shader run per sample there made NVIDIA's GPU write to
+        // address 0 (device lost): WipEout's menu ship in PS4 Pro mode with checkerboard, a
+        // pixel shader that interpolates at sample positions (SampleId on NVIDIA) into a
+        // 1-sample colour target over a 4-sample depth target. Without per-sample shading the
+        // recompiler now reads those per pixel (HwFragmentRuntimeInfo::per_sample_shading);
+        // pipelines that do shade per sample get the colour samples of the depth target, as
+        // without a mixed-sample extension.
+        const auto* fs = sel.infos[static_cast<u32>(Shader::SwStage::Fragment)];
+        const bool nv_mixed = all_color_samples_same && depth_mismatch &&
+                              color_samples < key.depth_samples &&
+                              instance.IsMixedDepthSamplesSupported() &&
+                              !instance.IsMixedAnySamplesSupported();
+        const bool per_sample = fs && FragmentShadesPerSample(regs, fs, profile);
         if (!all_color_samples_same && !instance.IsMixedAnySamplesSupported() ||
-            all_color_samples_same && depth_mismatch && !instance.IsMixedDepthSamplesSupported()) {
+            all_color_samples_same && depth_mismatch && !instance.IsMixedDepthSamplesSupported() ||
+            nv_mixed && per_sample) {
             key.color_samples.fill(key.depth_samples);
             key.num_samples = key.depth_samples;
         }
     }
+    key.ps_iter_samples = key.num_samples > 1 ? regs.eqaa.ps_iter_samples : 0;
 
     return true;
+}
+
+bool FragmentShadesPerSample(const AmdGpu::Regs& regs, const Shader::Info* fs,
+                             const Shader::Profile& profile) {
+    // Per-sample shading the pipeline asks for (HwFragmentRuntimeInfo::per_sample_shading,
+    // sampleShadingEnable): sample barycentrics and Sample-qualified inputs use SampleId and
+    // the Sample decoration only then (spirv_emit_context.cpp).
+    if (!LightingTest::Current().shading && regs.eqaa.ps_iter_samples != 0 &&
+        (regs.ps_input_addr.persp_sample_ena || regs.ps_input_addr.linear_sample_ena)) {
+        return true;
+    }
+    // A shader that reads the sample ID itself (known only for one translated in this
+    // session: `loads` is not kept in the disk cache).
+    return fs && fs->loads.Get(Shader::IR::Attribute::SampleIndex);
 }
 
 bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
@@ -1215,25 +1314,30 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     }
 
     auto it_pgm = program_cache.find(params.hash); // this thread is the only writer
-    const bool compile_async = AsyncCompilation() && hw_stage != HwStage::Compute &&
-                               !sel.regs->stage_enable.hs_en &&
-                               !EmulatorSettings.IsShaderCollect();
-    if (!compile_async && it_pgm != program_cache.end() && it_pgm->second->pending) {
+    if (it_pgm == program_cache.end() && DiskShadersActive() && LoadDiskProgram(params.hash)) {
+        it_pgm = program_cache.find(params.hash);
+    }
+    // gow3: asked only for a missing program or permutation (CompilePolicy reads the clock).
+    const auto compile_async = [&] {
+        return hw_stage != HwStage::Compute && !sel.regs->stage_enable.hs_en &&
+               !EmulatorSettings.IsShaderCollect() && AsyncCompilation();
+    };
+    if (it_pgm != program_cache.end() && it_pgm->second->pending && !compile_async()) {
         {
             PhaseTimer waiting{g_gow3_compile_wait_ns};
             it_pgm->second->pending->job.Wait();
         }
         PublishShaders();
     }
-    if (!compile_async && it_pgm != program_cache.end() && it_pgm->second->modules.empty() &&
-        !it_pgm->second->compilation_failed) {
+    if (it_pgm != program_cache.end() && it_pgm->second->modules.empty() &&
+        !it_pgm->second->compilation_failed && !compile_async()) {
         std::unique_lock lock{programs_mutex};
         program_cache.erase(it_pgm);
         it_pgm = program_cache.end();
     }
     if (it_pgm == program_cache.end()) {
         auto new_program = std::make_unique<Program>(hw_stage, sw_stage, params);
-        if (compile_async) {
+        if (compile_async()) {
             QueueShader(*new_program, hw_stage, sw_stage, params, runtime_info, binding, 0, true);
             std::unique_lock lock{programs_mutex};
             program_cache.emplace(params.hash, std::move(new_program));
@@ -1246,6 +1350,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         const auto perm_hash = HashCombine(params.hash, 0);
 
         RegisterShaderMeta(new_program->info, spec.fetch_shader_data, spec, perm_hash, 0);
+        disk_stats.compiled += DiskShadersActive();
         new_program->AddPermut(module, std::move(spec));
         new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
         Program* program = new_program.get();
@@ -1261,7 +1366,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     if (program->compilation_failed || (program->modules.empty() && program->pending)) {
         return {};
     }
-    if (program->modules.empty() && compile_async) {
+    if (program->modules.empty() && compile_async()) {
         QueueShader(*program, hw_stage, sw_stage, params, runtime_info, binding, 0, true);
         return {};
     }
@@ -1276,7 +1381,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     info.RefreshFlatBuf();
     auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
 
-    size_t perm_idx = program->modules.size();
+    size_t perm_idx = NewPermutationIndex(*program);
     u64 perm_hash = HashCombine(params.hash, perm_idx);
 
     vk::ShaderModule module{};
@@ -1294,7 +1399,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
                                     program->failed_permutations.end()) {
             return {};
         }
-        if (compile_async) {
+        if (compile_async()) {
             QueueShader(*program, hw_stage, sw_stage, params, runtime_info, binding, perm_idx, false,
                         std::move(spec));
             return {};
@@ -1303,11 +1408,15 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
 
         RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
+        disk_stats.compiled += DiskShadersActive();
         std::unique_lock lk{programs_mutex};
-        program->AddPermut(module, std::move(spec));
+        program->InsertPermut(module, std::move(spec), perm_idx);
     } else {
         info.AddBindings(binding);
         module = it->module;
+        if (!disk_modules_unused.empty() && disk_modules_unused.erase(module)) {
+            ++disk_stats.matched;
+        }
         perm_idx = std::distance(program->modules.begin(), it);
         perm_hash = HashCombine(params.hash, perm_idx);
     }

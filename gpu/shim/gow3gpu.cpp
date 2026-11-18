@@ -1,6 +1,7 @@
 #include "gow3_write_log.h"
 // gow3: glue between the C loader and the vendored shadPS4 video core.
 #include "gow3_overlay.h"
+#include "gow3_perf_stats.h"
 #include "gow3_png.h"
 #include "gow3_settings.h"
 #include "gow3_copy.h"
@@ -196,10 +197,23 @@ std::condition_variable g_window_cv;
 bool g_window_ready;
 } // namespace
 
+double Gow3DisplayRefreshRate() {
+    static const double rate = [] {
+        const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        if (!mode || mode->refresh_rate <= 0) {
+            return 60.0;
+        }
+        // The exact rate when the driver gives it (59.94 is 60000/1001), else SDL's rounded one.
+        return mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0
+                   ? double(mode->refresh_rate_numerator) / mode->refresh_rate_denominator
+                   : double(mode->refresh_rate);
+    }();
+    return rate;
+}
+
 u32 Gow3DisplayRefreshHz() {
     static const u32 hz = [] {
-        const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-        const u32 rate = mode && mode->refresh_rate > 0 ? u32(mode->refresh_rate + 0.5f) : 60;
+        const u32 rate = u32(Gow3DisplayRefreshRate() + 0.5);
         std::printf("GPU: vblank follows the display refresh rate, %u Hz\n", rate);
         return std::max<u32>(rate, 60);
     }();
@@ -207,19 +221,29 @@ u32 Gow3DisplayRefreshHz() {
 }
 
 #ifdef GOW3_PGO_GENERATE
+#ifdef __clang__
+extern "C" int __llvm_profile_write_file(void);
+#else
 extern "C" void __gcov_dump(void);
 extern "C" void __gcov_reset(void);
+#endif
 // Instrumented build (GOW3_PGO=generate): the game often ends through _exit (watchdog, guest
-// exit), which skips the profile write at exit. Write every 30 s and reset: the files sum the
-// intervals.
+// exit), which skips the profile write at exit. Write every 30 s. GCC: write and reset, the files
+// sum the intervals. Clang: the file (LLVM_PROFILE_FILE, %p = one per run) is written again with
+// the counts since the start.
 static void StartProfileWriter() {
     std::thread([] {
         Common::SetCurrentThreadName("gow3:pgo");
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(30));
+#ifdef __clang__
+            const int failed = __llvm_profile_write_file();
+            std::printf(failed ? "PGO: the profile could not be written\n" : "PGO: profile written\n");
+#else
             __gcov_dump();
             __gcov_reset();
             std::printf("PGO: profile written\n");
+#endif
         }
     }).detach();
 }
@@ -285,6 +309,26 @@ extern "C" uintptr_t gow3gpu_resolve(const char* scoped_nid) {
         }
     }
     return 0;
+}
+
+extern "C" void gow3gpu_frame_threads(unsigned long* game_thread, unsigned long* gpu_thread,
+                                      uint64_t* frames) {
+    *game_thread = Gow3PerfStats::game_thread_id.load();
+    *gpu_thread = Gow3Stats::gpu_thread_id.load();
+    *frames = Gow3PerfStats::game_frames.load();
+}
+
+extern "C" void gow3gpu_draw_rec_thread(unsigned long* thread, uint64_t* drain_cycles,
+                                        unsigned long* vk_recorder) {
+    *thread = Gow3Stats::draw_rec_thread_id.load();
+    *vk_recorder = Gow3Stats::vk_recorder_thread_id.load();
+    *drain_cycles = Gow3Stats::pipe_drain_cycles.load();
+}
+
+extern "C" void gow3gpu_draw_counts(uint64_t* draws, uint64_t* dispatches, uint64_t* submissions) {
+    *draws = Gow3Stats::draws.load();
+    *dispatches = Gow3Stats::dispatches.load();
+    *submissions = Gow3Stats::submissions.load();
 }
 
 extern "C" int gow3gpu_handle_fault(void* ucontext, void* address) {
@@ -370,6 +414,10 @@ ScreenshotRequests ConsumeScreenshotRequests() {
 }
 } // namespace VideoCore
 
+extern "C" int gow3gpu_stick_deadzone_percent(void) {
+    return Gow3Settings::Get().stick_deadzone.load(std::memory_order_relaxed);
+}
+
 extern "C" int gow3gpu_vibration_percent(void) {
     return Gow3Settings::Get().vibration.load(std::memory_order_relaxed);
 }
@@ -380,6 +428,12 @@ extern "C" void gow3gpu_movie_picture(void) {
 
 extern "C" void gow3gpu_request_screenshot(void) {
     VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
+}
+
+extern "C" void gow3gpu_guest_heap_freed(uintptr_t address, uint64_t size) {
+    if (auto* r = Core::Memory::Instance()->GetRasterizer()) {
+        r->GetTextureCache().NoteGuestFree(address, size);
+    }
 }
 
 extern "C" void gow3gpu_notice(const char* utf8) {
@@ -394,8 +448,16 @@ extern "C" int gow3gpu_music_shuffle(void) {
     return Gow3Settings::Get().music_shuffle.load(std::memory_order_relaxed);
 }
 
+extern "C" int gow3gpu_music_continue(void) {
+    return Gow3Settings::Get().music_continue.load(std::memory_order_relaxed);
+}
+
 extern "C" int gow3gpu_music_volume(void) {
     return Gow3Settings::Get().music_volume.load(std::memory_order_relaxed);
+}
+
+extern "C" int gow3gpu_game_music_volume(void) {
+    return Gow3Settings::Get().game_music_volume.load(std::memory_order_relaxed);
 }
 
 extern "C" int gow3gpu_mouse_prompt_distance(void) {

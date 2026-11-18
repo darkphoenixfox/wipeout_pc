@@ -105,7 +105,9 @@ void SetOpen(bool value) {
     if (menu_open.exchange(value) == value) {
         return;
     }
-    ImGui::GetIO().MouseDrawCursor = value;
+    // The SDL window shows the compositor cursor while this menu has input. It stays outside
+    // the swapchain, so it remains sharp at every render scale and needs no overlay draw.
+    ImGui::GetIO().MouseDrawCursor = false;
     if (value) {
         requested_tab = Gow3Settings::Get().menu_tab;
     }
@@ -351,6 +353,8 @@ void GameTab() {
 
     ImGui::SeparatorText("Controller");
     if (BeginRows("##controller")) {
+        SliderRow("Stick deadzone", s.stick_deadzone, 0, 50, "%d%%",
+                  "Ignores small stick movements, for a stick that drifts. 0% keeps the game's own.");
         SliderRow("Vibration", s.vibration, 0, 100, "%d%%",
                   "Strength of the controller's vibration. 0% turns it off.");
         if (gow) {
@@ -369,6 +373,13 @@ void GameTab() {
         ImGui::EndTable();
     }
     if (!gow) {
+        ImGui::SeparatorText("Pictures");
+        if (BeginRows("##pictures")) {
+            CheckRow("Hide HUD (F8)", s.hide_hud,
+                     "The game's HUD and menus are not drawn, for clean pictures (photo mode, F12). F8 "
+                     "switches it while you play; it is off again at the next start.");
+            ImGui::EndTable();
+        }
         return;
     }
 
@@ -416,6 +427,16 @@ void GameTab() {
     }
 }
 
+// The session started with a temporal upscaler (launcher: Graphics > Temporal anti-aliasing);
+// without one (GOW3_UPSCALER=none, as TemporalUpscaler decides it) switching would only change a label.
+bool SessionHasUpscaler() {
+    static const bool has = [] {
+        const char* upscaler = std::getenv("GOW3_UPSCALER");
+        return !(upscaler && std::strcmp(upscaler, "none") == 0);
+    }();
+    return has;
+}
+
 void ImageTab() {
     namespace G = Gow3Graphics;
     auto& s = Gow3Settings::Get();
@@ -424,6 +445,28 @@ void ImageTab() {
         ChoiceRow("Display mode", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
                   "Windowed, borderless window or exclusive fullscreen.");
         CheckRow("VSync", s.vsync, "Waits for the monitor: no tearing, a little more input delay.");
+        ImGui::EndTable();
+    }
+    ImGui::SeparatorText("Anti-aliasing");
+    if (!SessionHasUpscaler()) {
+        ImGui::TextDisabled("FSR 3.1 and DLAA: turn on Temporal anti-aliasing in the launcher (Graphics).");
+    } else if (BeginRows("##aa")) {
+        // Live, as F10. The game's multisampling is off in these sessions, so Off has no anti-aliasing.
+        static const char* const aa_labels[] = {"Off", "FSR 3.1", "DLAA (NVIDIA RTX)"};
+        static const int aa_values[] = {Gow3Settings::UpscalerOff, Gow3Settings::UpscalerFsr3,
+                                        Gow3Settings::UpscalerDlss};
+        const bool dlss = s.dlss_supported;
+        const char* problem = s.dlss_problem.load();
+        ChoiceRow("Method", s.upscaler, aa_labels, aa_values, dlss ? 3 : 2,
+                  dlss      ? "Smooths edges at the game's resolution. DLAA needs an NVIDIA RTX GPU."
+                  : problem ? problem
+                            : "DLAA: NVIDIA RTX GPU and the launcher's Download NVIDIA DLSS button.");
+        // #51: the scene at a lower resolution, scaled up by the method (live); the HUD stays sharp.
+        static const char* const scale_labels[] = {"Off", "Quality (1/1.5)", "Balanced (1/1.7)",
+                                                   "Performance (1/2)"};
+        ChoiceRow("Upscaling", s.preset, scale_labels, nullptr, 4,
+                  "Draws the race at a lower resolution and scales it up: more FPS, a softer picture. "
+                  "The HUD stays sharp.");
         ImGui::EndTable();
     }
     const int iw = s.image_width, ih = s.image_height, ww = s.window_width, wh = s.window_height;
@@ -465,6 +508,18 @@ void ImageTab() {
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
+    ImGui::SeparatorText("HDR");
+    if (BeginRows("##hdr")) {
+        ImGui::BeginDisabled(!s.hdr_active);
+        const char* off = s.hdr_active ? nullptr : "HDR is off: turn on HDR in the launcher and in Windows.";
+        SliderRow("HDR brightness", s.hdr_brightness, 10, 200, "%d%%",
+                  off ? off : "Brightness of the whole picture. 100%: the game's own.");
+        SliderRow("HDR peak brightness", s.hdr_peak, 100, 10000, "%d nits",
+                  off ? off : "Set it to your display's peak brightness: the brightest parts then keep "
+                              "their detail. 10000: no limit (the game's own).");
+        ImGui::EndDisabled();
+        ImGui::EndTable();
+    }
     ImGui::SeparatorText("Textures (applied on restart)");
     if (BeginRows("##textures")) {
         static const char* const anisotropy_labels[] = {"Game default", "2x", "4x", "8x", "16x"};
@@ -491,7 +546,7 @@ void PerformanceTab() {
     auto& s = Gow3Settings::Get();
     ImGui::SeparatorText("Live");
     if (BeginRows("##live")) {
-        static const char* const fps_labels[] = {"30", "60", "100", "120", "240", "Unlimited"};
+        static const char* const fps_labels[] = {"30", "40", "60", "100", "120", "144", "165", "240", "Unlimited"};
         ChoiceRow("Frame rate limit", s.fps_limit, fps_labels, G::FpsLimits.data(), int(G::FpsLimits.size()),
                   "Caps the frame rate. The engine frame rate (below) is the highest it can go.");
         const int effective = G::EffectiveFps(s.fps_limit, s.applied_engine_fps);
@@ -507,7 +562,8 @@ void PerformanceTab() {
         ChoiceRow("Frames queued", s.frames_queued, queued_labels, G::FramesQueued.data(),
                   int(G::FramesQueued.size()), "More frames queued: steadier FPS, slower response to input.");
         CheckRow("Compile new shaders in the background", s.async_shaders,
-                 "Fewer stutters in new areas; an object or effect may appear a moment later.");
+                 "Shaders seen for the first time on this PC: fewer stutters in new areas; an object "
+                 "or effect may appear a moment later. Shaders in the cache never wait.");
         ImGui::EndTable();
     }
     ImGui::SeparatorText("Applied on restart");
@@ -611,9 +667,14 @@ void MusicTab() {
     if (BeginRows("##music")) {
         CheckRow("Play my music", s.music, "Your songs instead of the game's music. Off: the game's music.");
         CheckRow("Shuffle", s.music_shuffle, "Random order. Off: the songs play in the order of the list.");
+        CheckRow("Keep the song between races", s.music_continue,
+                 "Each race goes on with the song that was playing. Off: a new song starts with each race.");
         SliderRow("Music volume", s.music_volume, 0, 200, "%d%%",
                   "100%: about as loud as the game's own music. Each song is leveled, so quiet and loud songs "
                   "sound alike.");
+        SliderRow("Game music volume", s.game_music_volume, 0, 300, "%d%%",
+                  "The game's own music, on top of its Audio Options. Above 100% it is louder than the game "
+                  "allows; very loud parts may clip.");
         ImGui::EndTable();
     }
     const int songs = runtime_music_songs();
@@ -755,6 +816,27 @@ void Menu() {
     } else {
         ImGui::NewLine();
     }
+    // Quit asks once more; it closes the game like the window's close button (#94).
+    static bool confirm_quit = false, focus_quit = false;
+    if (!confirm_quit) {
+        confirm_quit = focus_quit = ImGui::Button("Quit game");
+    } else {
+        ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "Quit? Unsaved progress is lost.");
+        ImGui::SameLine();
+        if (focus_quit) { // the pressed button is gone: keyboard and pad go on from here
+            ImGui::SetKeyboardFocusHere();
+            focus_quit = false;
+        }
+        if (ImGui::Button("Quit")) {
+            Gow3Settings::Save();
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        }
+        ImGui::SameLine();
+        confirm_quit = !ImGui::Button("Cancel");
+    }
+    ImGui::SameLine();
     const float close_width = ImGui::CalcTextSize("Close").x + ImGui::GetStyle().FramePadding.x * 2;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - close_width);
     if (ImGui::Button("Close")) {
@@ -959,6 +1041,30 @@ s64 NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
+}
+
+/// Automated test runs (tools/deck/bench-run.sh) name the run, "<title> - test X of Y":
+/// GOW3_TEST_LABEL, shown in the top right corner for the whole run.
+const std::string& TestLabel() {
+    static const std::string label = [] {
+        const char* text = std::getenv("GOW3_TEST_LABEL");
+        return std::string(text ? text : "");
+    }();
+    return label;
+}
+
+void TestLabelWindow() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float pad = 12.0f * base_scale;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - pad, viewport->WorkPos.y + pad),
+                            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.6f);
+    ImGui::Begin("##test_label", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextUnformatted(TestLabel().c_str());
+    ImGui::End();
 }
 
 bool NoticeActive() {
@@ -1208,6 +1314,14 @@ bool HandleEvent(const SDL_Event& event) {
             }
             return true;
         }
+        if (event.key.key == SDLK_F8) { // Hide HUD (#68)
+            if (down && !event.key.repeat) {
+                auto& hide = Gow3Settings::Get().hide_hud;
+                hide.store(!hide.load());
+                ShowNotice(hide.load() ? "HUD hidden (F8 shows it)" : "HUD shown", 2000);
+            }
+            return true;
+        }
         if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F11) {
             Vulkan::FrameCapture::Request();
             return true;
@@ -1220,8 +1334,7 @@ bool HandleEvent(const SDL_Event& event) {
         // decides it): switching would only change the overlay's label.
         static const bool upscaler_key = [] {
             const char* env = std::getenv("GOW3_UPSCALER_KEY");
-            const char* upscaler = std::getenv("GOW3_UPSCALER");
-            return env && *env == '1' && !(upscaler && std::strcmp(upscaler, "none") == 0);
+            return env && *env == '1' && SessionHasUpscaler();
         }();
         if (down && !event.key.repeat && upscaler_key && event.key.key == SDLK_F10) {
             auto& s = Gow3Settings::Get();
@@ -1388,7 +1501,7 @@ void SetLoading(bool active, u32 done, u32 total) {
 bool Visible() {
     const auto& s = Gow3Settings::Get();
     return initialized && (loading || background_total || menu_open || text_entry_active || choice_active ||
-                           choice_retiring || s.show_fps || NoticeActive() ||
+                           choice_retiring || s.show_fps || NoticeActive() || !TestLabel().empty() ||
                            (s.actor_watch_supported && s.enemy_health_bar));
 }
 
@@ -1460,6 +1573,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (NoticeActive()) {
         Notice();
+    }
+    if (!TestLabel().empty()) {
+        TestLabelWindow();
     }
     if (!loading && !menu_open) {
         HealthDisplay();

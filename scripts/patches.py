@@ -123,10 +123,37 @@ def encode(line):
     raise ValueError(f'unsupported patch type {kind!r}')
 
 
-def compile_patches(xml, names, app_version, segments, image=None, skipped=None):
+# rip-relative lea (REX.W, any register): the operand's 4 bytes follow these 3.
+LEA_RIP=re.compile(rb'[\x48\x4c]\x8d[\x05\x0d\x15\x1d\x25\x2d\x35\x3d]')
+
+
+def move_table(image, table, old, reserve):
+    """Writes that point every rip-relative lea into a full game table (Target; Size bytes, its
+    end included) at a bigger copy in the linked image's reserve (link_modules.py), Count
+    entries of Entry bytes: the table's end becomes the copy's end. The game's own code
+    initializes the copy; the patch's Lines raise its limit. Refs: how many leas the build has.
+    The copy starts one entry into the reserve: code that reads entry -1 (an index of -1 for "no
+    entry") reads zeros there, as it read the .bss before the table."""
+    size,entry,count=(int(table.get(k),0) for k in ('Size','Entry','Count'))
+    if not reserve or reserve[1]<(count+1)*entry:
+        raise LookupError('no memory reserved for the bigger table')
+    writes=[]
+    for m in LEA_RIP.finditer(image):
+        at=m.start()+3
+        target=at+4+struct.unpack_from('<i',image,at)[0]
+        if old<=target<=old+size:
+            moved=reserve[0]+entry+(target-old if target<old+size else count*entry)
+            writes.append((at,struct.pack('<i',moved-at-4)))
+    if len(writes)!=int(table.get('Refs')):
+        raise LookupError(f'{len(writes)} table references, not {table.get("Refs")}')
+    return writes
+
+
+def compile_patches(xml, names, app_version, segments, image=None, skipped=None, reserve=None):
     """Writes of the named patches. With the game's image, each site is found by its signature
     (any build); without it, at the reference build's Address. A Line with a Target writes at that
     Target instead: data the code points to, such as a .bss variable (no bytes of its own to find).
+    A Table moves a full game table into reserve, (offset, bytes) after the modules (needs image).
     A patch whose sites are not all found is left out whole, with the reason in skipped[name].
     app_version None: any version."""
     found={}
@@ -144,6 +171,8 @@ def compile_patches(xml, names, app_version, segments, image=None, skipped=None)
             targets=(resolve_targets(image,found[name],sites) if image is not None else
                      {t.get('Name'):int(t.get('Address'),0)-EBOOT_BASE for t in found[name].iter('Target')})
             sites=[targets[line.get('Target')] if line.get('Target') else site for line,site in zip(lines,sites)]
+            moved=[w for table in found[name].iter('Table')
+                   for w in move_table(image,table,targets[table.get('Target')],reserve)]
         except LookupError as error:
             if skipped is None: raise ValueError(f'{name}: {error}')
             skipped[name]=str(error)
@@ -153,6 +182,7 @@ def compile_patches(xml, names, app_version, segments, image=None, skipped=None)
             if not any(start<=offset and offset+len(data)<=end for start,end in segments):
                 raise ValueError(f'{name}: address {offset+EBOOT_BASE:#x} is outside the eboot')
             writes.append((offset,data))
+        writes+=moved
     return writes
 
 
@@ -233,7 +263,9 @@ EXCLUSIVE_PREFIX='Resolution Patch'
 REPLACED_BY_EXCLUSIVE={'Bug Fix - Texture Corruption Fix'}
 # Fixes with nothing to choose: not offered in the launcher and applied even with its saved list,
 # which predates them (the startup black screen fix sets a value the game overwrites at once).
-ALWAYS_ON={'Bug Fix - Startup Black Screen', 'Bug Fix - Startup Hang'}
+ALWAYS_ON={'Bug Fix - Startup Black Screen', 'Bug Fix - Startup Hang', 'Bug Fix - Effects above 60 FPS',
+           'Bug Fix - Zone crash above 60 FPS', 'Bug Fix - Zone points above 60 FPS',
+           'Bug Fix - Model slots'}
 
 
 def selected_patches(xml, app_version, extra, only=False):
@@ -311,14 +343,16 @@ def default_enabled(xmls, app_version):
     return names
 
 
-def patch_requirements(xml, names, app_version):
+def patch_requirements(xml, names, app_version, neo=False):
     """(direct memory MiB, VBlank Hz) the selected patches' notes ask for, None when not needed.
-    shadPS4 notes say "Requires setting DMEM to N MB": N is on top of the retail pool."""
+    shadPS4 notes say "Requires setting DMEM to N MB": N is on top of the retail pool.
+    "DMEM to N MB in PS4 Pro mode" counts only in Pro mode (neo), whose heap table the patch grows."""
     dmem=vblank=None
     for meta in ET.parse(xml).getroot().iter('Metadata'):
         if meta.get('Name') not in names or meta.get('AppVer')!=app_version: continue
         note=meta.get('Note','')
-        if m:=re.search(r'DMEM to (\d+) MB',note): dmem=max(dmem or 0,DMEM_RETAIL_MB+int(m.group(1)))
+        for m in re.finditer(r'DMEM to (\d+) MB( in PS4 Pro mode)?',note):
+            if neo or not m.group(2): dmem=max(dmem or 0,DMEM_RETAIL_MB+int(m.group(1)))
         if m:=re.search(r'VBlank to (\d+) FPS',note): vblank=max(vblank or 0,int(m.group(1)))
     return dmem,vblank
 
@@ -409,7 +443,10 @@ def main():
     elf=(a.out/'eboot.elf').read_bytes()
     segments=eboot_segments(elf)
     skipped={}
-    writes=compile_patches(xml,names,None,segments,eboot_image(elf),skipped)
+    link=json.loads((a.out/'link.json').read_text()) if (a.out/'link.json').is_file() else {}
+    reserve=link.get('reserve')
+    writes=compile_patches(xml,names,None,segments,eboot_image(elf),skipped,
+                           reserve and (int(reserve['base'],0),reserve['size']))
     for name,reason in skipped.items():
         print(f'Patches: {name} skipped ({reason} in this eboot.bin)')
     if a.patches_dir and sha==REFERENCE_SHA256:
@@ -419,6 +456,10 @@ def main():
                                                     a.patches_config),segments)
     write_patches(a.out,writes)
     applied=[n for n in names if n not in skipped]
+    if skipped and not applied:
+        # Every signature misses: in the reports (#39, #54) an eboot.bin without its update.
+        print('Patches: none of the patches fit this eboot.bin: is the game update installed? '
+              '(launcher: Game > Folders > Update folder)')
     (a.out/'patch_status.json').write_text(json.dumps({'sha256':sha,'applied':applied,'skipped':skipped}))
     print(f'Patches: {title}; {len(writes)} writes from {applied or "none"}')
 

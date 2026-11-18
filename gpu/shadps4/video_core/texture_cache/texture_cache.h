@@ -45,6 +45,12 @@ namespace VideoCore {
 class BufferCache;
 class PageManager;
 
+/// gow3: GOW3_TEXTURE_LIMIT=N (launcher Texture quality): a sampled block-compressed 2D texture
+/// larger than N pixels is bound from its first level of at most N pixels, an image of its own
+/// over that level's guest memory (#72, #16: 4 GB cards). Left whole when the levels would lie
+/// elsewhere in a standalone layout.
+void LimitTextureSize(ImageInfo& info, ImageViewInfo& view);
+
 class TextureCache {
     // Default values for garbage collection
     static constexpr s64 DEFAULT_PRESSURE_GC_MEMORY = 1_GB + 512_MB;
@@ -82,7 +88,11 @@ public:
         ImageDesc(const AmdGpu::Image& image, const Shader::ImageResource& desc)
             : info{image, desc}, view_info{image, desc},
               type{desc.is_written ? BindingType::Storage : BindingType::Texture},
-              needs_native{desc.needs_native} {}
+              needs_native{desc.needs_native} {
+            if (type == BindingType::Texture && !needs_native) {
+                LimitTextureSize(info, view_info);
+            }
+        }
         ImageDesc(const AmdGpu::ColorBuffer& buffer, AmdGpu::CbDbExtent hint)
             : info{buffer, hint}, view_info{buffer}, type{BindingType::RenderTarget} {}
         ImageDesc(const AmdGpu::DepthBuffer& buffer, AmdGpu::DepthView view,
@@ -123,8 +133,17 @@ public:
     /// are marked CPU-dirty at the next UpdateImage or GC tick (ApplyBackingWrites).
     void NoteBackingWrite(VAddr address, u64 size);
 
-    /// Marks an image as dirty if it exists at the provided address.
-    void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
+    /// gow3: the game freed a block of its GPU heap (heap frees never unmap, so UnmapMemory
+    /// never ran and every track's textures stayed cached: 1.3 -> 6.8 GB of images over a few
+    /// races in VR). Any thread, any lock: at the next GC tick, images that lie wholly inside
+    /// the block and existed before this call are freed (ApplyGuestFrees).
+    void NoteGuestFree(VAddr address, u64 size);
+
+    /// Marks an image as dirty if it exists at the provided address. With `fill` (gow3: every
+    /// dword of the range set to it), an image whose whole layers the range covers is cleared
+    /// on the GPU instead.
+    void InvalidateMemoryFromGPU(VAddr address, size_t max_size,
+                                 std::optional<u32> fill = std::nullopt);
 
     /// Evicts any images that overlap the unmapped range.
     void UnmapMemory(VAddr cpu_addr, size_t size);
@@ -198,7 +217,7 @@ public:
         std::scoped_lock lock{mutex};
         ApplyBackingWrites();
         Image& image = slot_images[image_id];
-        TrackImage(image_id);
+        TrackImageUnlessDeferred(image_id);
         TouchImage(image);
         RefreshImage(image);
         SynchronizeAlias(image_id);
@@ -224,7 +243,7 @@ public:
     [[nodiscard]] ImageId ExpandImage(const ImageInfo& info, ImageId image_id);
 
     /// Reuploads image contents.
-    void RefreshImage(Image& image);
+    void RefreshImage(Image& image, u32 first_mip = 0);
 
     /// Retrieves the sampler that matches the provided S# descriptor.
     /// extra_lod_bias: gow3, added to the S#'s bias (reduced scene rendering).
@@ -303,6 +322,30 @@ public:
             return true;
         }
         return false;
+    }
+
+    /// gow3: the color target of a CMask surface and the clear color it was last cleared with.
+    /// Only a live, registered image that still owns the CMask: a stale entry (the image deleted,
+    /// or moved to another CMask) crashed a race in the clear (#135). Images go on guest threads.
+    std::pair<ImageId, vk::ClearValue> MetaTarget(VAddr address) {
+        std::scoped_lock lock{mutex};
+        const auto it = surface_metas.find(address);
+        if (it == surface_metas.end() || !it->second.image ||
+            !slot_images.is_allocated(it->second.image)) {
+            return {ImageId{}, vk::ClearValue{}};
+        }
+        const Image& image = slot_images[it->second.image];
+        if (False(image.flags & ImageFlagBits::Registered) ||
+            image.info.meta_info.cmask_addr != address) {
+            return {ImageId{}, vk::ClearValue{}};
+        }
+        return {it->second.image, it->second.clear_value};
+    }
+
+    void SetMetaClearValue(VAddr address, const vk::ClearValue& value) {
+        if (auto it = surface_metas.find(address); it != surface_metas.end()) {
+            it.value().clear_value = value;
+        }
     }
 
     /// Updates the state of a slice of the specified metadata surface.
@@ -409,6 +452,9 @@ private:
 
     /// Track CPU reads and writes for image
     void TrackImage(ImageId image_id);
+    /// gow3: TrackImage, except for an image left unprotected for the rest of the flip of its
+    /// last CPU write (DeferStreamedImageTracking); a flip later it is re-read and tracked again.
+    void TrackImageUnlessDeferred(ImageId image_id);
     void TrackImageHead(ImageId image_id);
     void TrackImageTail(ImageId image_id);
 
@@ -423,10 +469,24 @@ private:
     void DeleteImage(ImageId image_id);
 
     /// Touch the image in the LRU cache.
-    void TouchImage(const Image& image);
+    /// Marks the image used in this GC tick (LRU). Inline: most lookups are already marked.
+    void TouchImage(const Image& image) {
+        if (image.lru_touched_tick != gc_tick) {
+            TouchImageSlow(image);
+        }
+    }
+    void TouchImageSlow(const Image& image);
 
     void FreeImage(ImageId image_id) {
         const auto& image = slot_images[image_id];
+        if (False(image.flags & ImageFlagBits::Registered)) {
+            // gow3 (#107): freed already; a second free stopped the game ("Trying to unregister
+            // an already unregistered image") after hours of play under memory pressure.
+            std::printf("Texture cache: image %#llx %ux%u freed twice, skipped\n",
+                        static_cast<unsigned long long>(image.info.guest_address),
+                        image.info.size.width, image.info.size.height);
+            return;
+        }
         ResolveReadbacks(image.info.guest_address, image.info.guest_size, true,
                          ReadbackSource::ImageFree);
         UntrackImage(image_id);
@@ -528,6 +588,18 @@ private:
     std::mutex backing_writes_mutex;
     std::vector<std::pair<VAddr, u64>> backing_writes;
     std::atomic<bool> has_backing_writes{false};
+    struct GuestFree {
+        VAddr address;
+        u64 size;
+        u64 last_uid; ///< images created after the free hold the block's new contents
+    };
+    void ApplyGuestFrees();
+    std::mutex guest_frees_mutex;
+    std::vector<GuestFree> guest_frees;
+    std::atomic<bool> has_guest_frees{false};
+    u64 guest_free_images{}, guest_free_bytes{};
+    /// gow3: upload bytes in the current submission (RefreshImage submits early past a limit).
+    u64 upload_tick{}, upload_tick_bytes{}, early_submits{};
     /// gow3: images with the same guest address (guarded by `mutex`). `backing` holds the
     /// complete contents; `writer` is a newer write not yet copied into it.
     struct AliasState {
@@ -578,6 +650,9 @@ private:
     struct MetaDataInfo {
         MetaType type;
         s32 clear_mask = -1;
+        ImageId image{};              ///< gow3: CMask: its color target
+        u64 image_uid{};              ///< gow3: and that target's uid (MetaTarget checks it)
+        vk::ClearValue clear_value{}; ///< gow3: CMask: the target's clear color
     };
     tsl::robin_map<VAddr, MetaDataInfo> surface_metas;
 };

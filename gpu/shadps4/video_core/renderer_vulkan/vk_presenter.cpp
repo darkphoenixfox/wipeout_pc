@@ -324,12 +324,14 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     stereo_pass.Create(device, instance.GetAllocator(), num_images);
     Gow3Overlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
+    const char* background_setting = std::getenv("GOW3_BACKGROUND_WARMUP");
+    const bool background_warmup = !background_setting || *background_setting != '0';
     const bool binary_cache = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARIES", true) &&
                               EmulatorSettings.IsPipelineCacheEnabled();
     const bool capture_only = EmulatorSettingsImpl::Flag("GOW3_PIPELINE_BINARY_ISOLATED", false) &&
                               EmulatorSettingsImpl::Flag("GOW3_PIPELINE_CAPTURE_ONLY", false);
     if (UseOnDemandPipelines(binary_cache, instance.GetPipelineBinaryGlobalKey().keySize != 0,
-                            capture_only)) {
+                            capture_only, background_warmup)) {
         rasterizer->GetPipelineCache().StartOnDemand();
         return;
     }
@@ -337,11 +339,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     // gow3: by default the cached pipelines load while the game runs (a corner note shows the
     // progress). Otherwise rebuilding them takes up to minutes before the first game frame:
     // show what is happening instead of a black window.
-    const char* background_warmup = std::getenv("GOW3_BACKGROUND_WARMUP");
-    if ((!background_warmup || *background_warmup != '0') &&
-        rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
+    if (background_warmup && rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
         return;
     }
+    std::printf("Pipeline startup: blocking warm-up (pipeline binary cache requested %s)\n",
+                binary_cache ? "on" : "off");
     Gow3Overlay::SetLoading(true, 0, 0);
     PresentLoadingFrame();
     auto last = std::chrono::steady_clock::now();
@@ -644,8 +646,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         }
         image_view = *image.FindView(view_info).image_view;
         image_size = vk::Extent2D{image.info.size.width, image.info.size.height};
+        // gow3: the FSR/RCAS pass reads it in a compute shader. With the fragment stage alone the
+        // pass could start before the game's last draws (its 2D layer): AMD cards lost the menus
+        // in Borderless and Fullscreen, where the window matches the image and RCAS runs (#45).
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
-                        vk::PipelineStageFlagBits2::eFragmentShader,
+                        vk::PipelineStageFlagBits2::eFragmentShader |
+                            vk::PipelineStageFlagBits2::eComputeShader,
                         vk::AccessFlagBits2::eShaderRead);
         runtime.FlushBarriers();
     }
@@ -712,6 +718,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // gow3: black bars around a cutscene when the render resolution is not 16:9 (movie_bars.h).
     pp_settings.picture = MovieBars::Cutscenes().Bars(image_size.width, image_size.height,
                                                       MovieBars::NowMs());
+    pp_settings.hdr_scale = float(graphics.hdr_brightness) / 100.0f;
+    pp_settings.hdr_peak = float(graphics.hdr_peak);
+    Gow3Settings::Get().hdr_active = pp_settings.hdr != 0;
     const vk::Extent2D views_size{image_size.width * 2, image_size.height};
     if (weaving && leiasr->Prepare(cmdbuf, views_size.width, views_size.height, frame->width,
                                    frame->height)) {

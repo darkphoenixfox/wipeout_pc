@@ -21,8 +21,10 @@
 #include "video_core/host_shaders/upscale_merge_r11_comp.h"
 #include "video_core/host_shaders/upscale_reactive_comp.h"
 #include "video_core/host_shaders/taa_comp.h"
+#include "video_core/host_shaders/taa_default_switches_comp.h"
 #include "video_core/host_shaders/taa_sharpen_comp.h"
 #include "video_core/host_shaders/taa_sharpen_ldr_comp.h"
+#include "video_core/host_shaders/taa_sharpen_scene_r11_comp.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
@@ -210,6 +212,16 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
                               .optimalTilingFeatures;
     depth_blit = (features & vk::FormatFeatureFlagBits::eBlitSrc) &&
                  (features & vk::FormatFeatureFlagBits::eBlitDst);
+    // The TAA sharpen pass can write a B10G11R11 scene color itself (storage, without format).
+    vk::FormatProperties3 r11{};
+    vk::FormatProperties2 r11_properties{.pNext = &r11};
+    instance.GetPhysicalDevice().getFormatProperties2(vk::Format::eB10G11R11UfloatPack32,
+                                                      &r11_properties);
+    const auto r11_needs = vk::FormatFeatureFlagBits2::eStorageImage |
+                           vk::FormatFeatureFlagBits2::eStorageWriteWithoutFormat;
+    sharpen_scene_r11 = (r11.optimalTilingFeatures & r11_needs) == r11_needs;
+    std::printf("TAA: sharpen into a B10G11R11 scene color %s\n",
+                sharpen_scene_r11 ? "supported" : "unsupported (write-back pass)");
     if (enabled && !instance.IsStorageImageWriteWithoutFormatEnabled()) {
         std::printf("Upscaler: shaderStorageImageWriteWithoutFormat unsupported, FSR 3 off\n");
         enabled = false;
@@ -301,10 +313,22 @@ bool TemporalUpscaler::OnFrameStart() {
     const bool jitter_on = active && settings.jitter && !Gow3Toggle::Disabled(1u << 25);
     const int upscaler = settings.upscaler.load();
     const int output = settings.output_res.load();
-    const bool output_changed = !scaled_session && applied_output != output;
+    u32 want_width = Gow3Settings::OutputWidths[output], want_height = Gow3Settings::OutputHeights[output];
+    // wipeout (pixel-shader trigger) has none of God of War III's UI hooks that an output other
+    // than the scene's size needs (Scaled()): with a larger one FSR and DLSS never ran (#211).
+    // Its upscaler writes the game's scene (1920x1080, 3840x2160 with the 4K render resolution or
+    // PS4 Pro mode), so an output from 1920x1080 up works like the scene's size and the presets
+    // divide that. A smaller one (Steam Deck 1280x720) keeps the raster at its size, as before.
+    const auto native = scene_targets.Native();
+    if (ps_trigger_hash && want_width >= 1920 && want_height >= 1080) {
+        want_width = native.width;
+        want_height = native.height;
+    }
+    const bool output_changed =
+        !scaled_session && (want_width != target_width || want_height != target_height);
     if (output_changed) {
-        target_width = Gow3Settings::OutputWidths[output];
-        target_height = Gow3Settings::OutputHeights[output];
+        target_width = want_width;
+        target_height = want_height;
         std::printf("Output resolution: %ux%u (live)\n", target_width, target_height);
         failed = false;
         fsr4_failed = false;
@@ -331,7 +355,6 @@ bool TemporalUpscaler::OnFrameStart() {
     if (changed || !dispatched_last_frame) reset = true;
     if (changed) jitter_index = 0;
     applied_preset = preset;
-    applied_output = output;
     applied_upscaler = upscaler;
     last_active = active;
     last_jitter = jitter_on;
@@ -355,7 +378,7 @@ bool TemporalUpscaler::OnFrameStart() {
     // CameraMotion::OnDisplayPass has already cleared Depth(). Use the context's render
     // size, which survives the frame boundary (Performance 960 -> 1920 needs 32 phases).
     const u32 phases = Scaled() ? Motion::JitterPhases(render_width, target_width)
-        : Motion::JitterPhases(scene_targets.Size().width, 1920);
+        : Motion::JitterPhases(scene_targets.Size().width, scene_targets.Native().width);
     jitter_index = jitter_index % phases + 1;
     jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
     return changed;
@@ -624,6 +647,10 @@ void TemporalUpscaler::CreatePipelines() {
     storage_layout(2, taa_sharpen_desc_layout, taa_sharpen_pipeline_layout, sizeof(float));
     taa_sharpen_pipeline = compute(TAA_SHARPEN_COMP, *taa_sharpen_pipeline_layout);
     taa_sharpen_ldr_pipeline = compute(TAA_SHARPEN_LDR_COMP, *taa_sharpen_pipeline_layout);
+    if (sharpen_scene_r11) {
+        taa_sharpen_scene_pipeline =
+            compute(TAA_SHARPEN_SCENE_R11_COMP, *taa_sharpen_pipeline_layout);
+    }
     {
         std::array<vk::DescriptorSetLayoutBinding, 7> bindings{};
         for (u32 i = 0; i < bindings.size(); ++i) {
@@ -646,11 +673,13 @@ void TemporalUpscaler::CreatePipelines() {
             .addressModeV = vk::SamplerAddressMode::eClampToEdge,
             .addressModeW = vk::SamplerAddressMode::eClampToEdge}));
         taa_pipeline = compute(TAA_COMP, *taa_pipeline_layout);
+        taa_default_pipeline = compute(TAA_DEFAULT_SWITCHES_COMP, *taa_pipeline_layout);
     }
 }
 
-void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
-                                vk::ImageView depth) {
+bool TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
+                                vk::ImageView depth, VideoCore::Image* scene,
+                                vk::ImageView scene_view) {
     // Make scene writes and the last storage-image history writes visible to sampled reads.
     const vk::MemoryBarrier2 inputs{
         .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
@@ -707,7 +736,23 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
                   (Gow3Toggle::Disabled(Gow3Toggle::TaaVariance) ? 4u << 8 : 0u) |
                   (Gow3Toggle::Disabled(Gow3Toggle::TaaFilter) ? 8u << 8 : 0u) |
                   (Gow3Toggle::Disabled(Gow3Toggle::TaaKeepNearerHistory) ? 16u << 8 : 0u);
-    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *taa_pipeline);
+    // Two shortcuts that keep the image (toggle TaaFastPaths restores the old passes, live).
+    const bool fast = !Gow3Toggle::Disabled(Gow3Toggle::TaaFastPaths);
+    // While every switch is at its default, the shader built without them: the same maths,
+    // without the work the off-by-default ones cost every pixel. Otherwise the shader that
+    // reads them, so the toggles and diagnostics work while running.
+    const bool default_switches = params.pad == 0 && fast;
+    const auto& settings = Gow3Settings::Get();
+    const float strength = std::clamp(settings.sharpness.load(), 0.0f, 2.0f);
+    const bool sharpen = settings.sharpen && strength > 0.0f && !(params.pad & 0xffu);
+    // Sharpening replaces the resolve's output with its own, made from the history: the resolve
+    // then stores none, and the sharpen pass writes the scene color, not an image for Run to copy.
+    const bool into_scene = sharpen && scene && taa_sharpen_scene_pipeline && fast;
+    if (into_scene) {
+        params.pad |= 1u << 31;
+    }
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute,
+                        default_switches ? *taa_default_pipeline : *taa_pipeline);
     if (params.pad & 0xffu) {
         static u32 diagnostic_frames = 0;
         if (diagnostic_frames++ < 16)
@@ -718,9 +763,7 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
     cmdbuf.pushConstants(*taa_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
                          sizeof(params), &params);
     cmdbuf.dispatch((out_width + 7) / 8, (out_height + 7) / 8, 1);
-    const auto& settings = Gow3Settings::Get();
-    const float strength = std::clamp(settings.sharpness.load(), 0.0f, 2.0f);
-    if (settings.sharpen && strength > 0.0f && !(params.pad & 0xffu)) {
+    if (sharpen) {
         const vk::MemoryBarrier2 resolved{
             .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
             .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
@@ -728,14 +771,24 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
             .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead |
                              vk::AccessFlagBits2::eShaderStorageWrite};
         cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &resolved});
+        if (into_scene) {
+            // The resolve's reads of the scene color are done (the barrier above). As for the
+            // write-back pass: passes after this one see the write through the tracked state.
+            runtime.Transit(scene, vk::ImageLayout::eGeneral,
+                            vk::PipelineStageFlagBits2::eComputeShader,
+                            vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
+            runtime.FlushBarriers();
+        }
         const std::array<vk::DescriptorImageInfo, 2> sharpen_infos{{
             {.imageView = *taa_history_views[taa_next], .imageLayout = vk::ImageLayout::eGeneral},
-            {.imageView = *output_view, .imageLayout = vk::ImageLayout::eGeneral}}};
+            {.imageView = into_scene ? scene_view : *output_view,
+             .imageLayout = vk::ImageLayout::eGeneral}}};
         std::array<vk::WriteDescriptorSet, 2> sharpen_writes{};
         for (u32 i = 0; i < sharpen_writes.size(); ++i)
             sharpen_writes[i] = {.dstBinding = i, .descriptorCount = 1,
                 .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &sharpen_infos[i]};
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *taa_sharpen_pipeline);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute,
+                            into_scene ? *taa_sharpen_scene_pipeline : *taa_sharpen_pipeline);
         cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute,
                                     *taa_sharpen_pipeline_layout, 0, sharpen_writes);
         cmdbuf.pushConstants(*taa_sharpen_pipeline_layout, vk::ShaderStageFlagBits::eCompute,
@@ -743,6 +796,7 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
         cmdbuf.dispatch((out_width + 7) / 8, (out_height + 7) / 8, 1);
     }
     taa_next = 1 - taa_next;
+    return into_scene;
 }
 
 void TemporalUpscaler::ExtraSharpen(vk::CommandBuffer cmdbuf, vk::Image target, bool ldr, u32 w,
@@ -1040,12 +1094,20 @@ void TemporalUpscaler::Run() {
         return;
     }
     VideoCore::Image* game_motion = nullptr;
+    vk::ImageView game_motion_proxy{};
     if (const auto id = camera_motion.GameMotion()) {
         game_motion = &texture_cache.GetImage(id);
-        // Native size only: a reduced scene would need the vectors read at the render size.
-        if (reduced || game_motion->info.pixel_format != vk::Format::eR16G16Sfloat ||
-            game_motion->info.size.width != ow || game_motion->info.size.height != oh) {
+        if (game_motion->info.pixel_format != vk::Format::eR16G16Sfloat ||
+            game_motion->info.size.width != ow || game_motion->info.size.height != oh ||
+            (reduced && !scene_targets.EligibleScene(*game_motion))) {
             return;
+        }
+        // A reduced scene (upscaling, #51) drew its vectors into the proxy at the render size;
+        // they are in screen units, so RecordGameMotion scales them by w x h.
+        if (reduced) {
+            VideoCore::ImageViewInfo mi;
+            mi.format = vk::Format::eR16G16Sfloat;
+            game_motion_proxy = scene_targets.Read(id, mi).view;
         }
     }
     if (!EnsureResources(w, h, ow, oh, true)) {
@@ -1057,9 +1119,9 @@ void TemporalUpscaler::Run() {
         CachedView(depth, depth_format, vk::ImageAspectFlagBits::eDepth);
     const auto color_view =
         CachedView(color, color.info.pixel_format, vk::ImageAspectFlagBits::eColor);
-    const auto game_motion_view = game_motion
-        ? CachedView(*game_motion, vk::Format::eR16G16Sfloat, vk::ImageAspectFlagBits::eColor)
-        : vk::ImageView{};
+    const auto game_motion_view = game_motion_proxy ? game_motion_proxy
+        : game_motion ? CachedView(*game_motion, vk::Format::eR16G16Sfloat, vk::ImageAspectFlagBits::eColor)
+                      : vk::ImageView{};
 
     scheduler.EndRendering();
     runtime.Transit(&depth, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
@@ -1122,6 +1184,14 @@ void TemporalUpscaler::Run() {
                 vk::ImageLayout::eGeneral, all, vk::AccessFlagBits2::eShaderRead);
 
     const bool has_reactive = mask_ready || RecordReactive(input_color_view);
+    // Debug (menu or toggle 1 << 28): the reactive mask in red over a darkened frame;
+    // or the motion vectors (menu).
+    const int debug_view = Gow3Settings::Get().debug_view;
+    const u32 mode = has_reactive && (debug_view == Gow3Settings::DebugReactive ||
+                                      Gow3Toggle::Disabled(1u << 28))
+                         ? 1
+                     : debug_view == Gow3Settings::DebugMotion ? 2
+                                                             : 0;
 
     const auto now = std::chrono::steady_clock::now();
     float frame_ms = std::chrono::duration<float, std::milli>(now - last_frame).count();
@@ -1131,8 +1201,11 @@ void TemporalUpscaler::Run() {
     last_frame = now;
 
     bool dispatched = false;
+    bool written_back = false;
     if (Gow3Settings::Get().upscaler == Gow3Settings::UpscalerTaa) {
-        RecordTaa(cmdbuf, input_color_view, input_depth_view);
+        // A debug view is drawn by the write-back pass, which then still runs.
+        written_back = RecordTaa(cmdbuf, input_color_view, input_depth_view,
+                                 r11 && !reduced && mode == 0 ? &color : nullptr, color_view);
         dispatched = true;
     } else if (UseFsr4()) {
         dispatched = RecordFsr4(cmdbuf, {input_color, input_color_view, w, h},
@@ -1218,6 +1291,9 @@ void TemporalUpscaler::Run() {
         if (Gow3Settings::Get().upscaler != Gow3Settings::UpscalerTaa) {
             ExtraSharpen(cmdbuf, vk::Image(output_image), false, ow, oh);
         }
+        if (written_back) {
+            return;
+        }
         // The result replaces the scene color's RGB (its alpha carries data for the post).
         own_barrier(vk::Image(output_image), vk::ImageLayout::eGeneral, all, rw,
                     vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
@@ -1260,14 +1336,6 @@ void TemporalUpscaler::Run() {
              .descriptorType = vk::DescriptorType::eSampledImage,
              .pImageInfo = &objects_info},
         }};
-        // Debug (menu or toggle 1 << 28): the reactive mask in red over a darkened frame;
-        // or the motion vectors (menu).
-        const int debug_view = Gow3Settings::Get().debug_view;
-        const u32 mode = has_reactive && (debug_view == Gow3Settings::DebugReactive ||
-                                          Gow3Toggle::Disabled(1u << 28))
-                             ? 1
-                         : debug_view == Gow3Settings::DebugMotion ? 2
-                                                                 : 0;
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute,
                             r11 ? *merge_r11_pipeline : *merge_pipeline);
         cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *merge_pipeline_layout, 0,
@@ -1329,12 +1397,13 @@ std::array<u32, 2> TemporalUpscaler::SceneSize(u32 w, u32 h) const {
 float TemporalUpscaler::SceneMipBias() const {
     if (!Active() || Gow3Settings::Get().upscaler == Gow3Settings::UpscalerTaa) return 0.0f;
     const float render = float(Gow3Settings::Get().active_render_width.load());
-    const float output = float(Scaled() ? target_width : 1920u);
+    const float output = float(Scaled() ? target_width : scene_targets.Native().width);
     return render > 0.0f && render < output ? std::log2(render / output) : 0.0f;
 }
 
 bool TemporalUpscaler::Scaled() const {
-    return scaled_session || target_width != 1920 || target_height != 1080;
+    const auto native = scene_targets.Native(); // 1920x1080 but in WipEout's 4K or Pro scene
+    return scaled_session || target_width != native.width || target_height != native.height;
 }
 
 void TemporalUpscaler::OnColorTarget(VideoCore::ImageId color) {

@@ -86,9 +86,7 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
 }
 
 UniqueImage::~UniqueImage() {
-    if (image) {
-        vmaDestroyImage(allocator, image, allocation);
-    }
+    Destroy();
 }
 
 void UniqueImage::Destroy() {
@@ -96,6 +94,8 @@ void UniqueImage::Destroy() {
         vmaDestroyImage(allocator, image, allocation);
         image = vk::Image{};
         allocation = {};
+        Gow3Stats::image_bytes -= static_cast<s64>(size_bytes);
+        --Gow3Stats::image_count;
     }
 }
 
@@ -110,6 +110,15 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
         .pool = VK_NULL_HANDLE,
         .pUserData = nullptr,
     };
+
+    // gow3: big images (8 MiB and up: the large textures and screen-size targets) get memory of
+    // their own, freed with them. In VMA's shared 256 MiB blocks a race's big textures left holes
+    // that menu images kept alive: after a 2048 race 2.4 GB of blocks held 1.1 GB of images, and
+    // 4 GB cards ran out of video memory at the next load (#16, #72).
+    const vk::DeviceImageMemoryRequirements query{.pCreateInfo = &image_ci};
+    if (device.getImageMemoryRequirements(query).memoryRequirements.size >= (8ull << 20)) {
+        alloc_ci.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    }
 
     const VkImageCreateInfo image_ci_unsafe = static_cast<VkImageCreateInfo>(image_ci);
     VkImage unsafe_image{};
@@ -128,10 +137,13 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
     size_bytes = alloc_info.size;
+    Gow3Stats::image_bytes += static_cast<s64>(size_bytes);
+    ++Gow3Stats::image_count;
 }
 
 Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
-             Common::SlotVector<ImageView>& slot_image_views_, const ImageInfo& info_)
+             Common::SlotVector<ImageView>& slot_image_views_, const ImageInfo& info_,
+             u32 host_mip_levels)
     : guest_begin{info_.guest_address}, guest_end{info_.guest_address + info_.guest_size},
       info{info_}, runtime{&runtime_}, slot_image_views{&slot_image_views_} {
     Gow3Stats::Timer timer{Gow3Stats::t_image_create};
@@ -205,7 +217,7 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
             .height = info.size.height,
             .depth = info.size.depth,
         },
-        .mipLevels = static_cast<u32>(info.resources.levels),
+        .mipLevels = std::max(host_mip_levels, static_cast<u32>(info.resources.levels)),
         .arrayLayers = static_cast<u32>(info.resources.layers),
         .samples = LiverpoolToVK::NumSamples(info.num_samples, supported_samples),
         .tiling = tiling,
@@ -223,6 +235,33 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
                           info.size.height, info.size.depth, AmdGpu::NameOf(info.tile_mode),
                           vk::to_string(info.pixel_format), info.guest_address, info.guest_size,
                           info.resources.layers, info.resources.levels, info.num_samples);
+}
+
+bool Image::CanGrowMipLevels(const ImageInfo& requested) const {
+    if (!backing || backing_images.size() != 1 || scene_proxy ||
+        True(flags & ImageFlagBits::Aliased) || info.type != AmdGpu::ImageType::Color2D ||
+        requested.type != info.type || info.props.is_depth || info.props.is_block ||
+        info.resources.layers != 1 || requested.resources.layers != 1 ||
+        info.num_samples != 1 || requested.num_samples != 1 ||
+        info.guest_samples != 1 || requested.guest_samples != 1 ||
+        info.size != requested.size || info.size.depth != 1 || info.pitch != requested.pitch ||
+        info.pixel_format != requested.pixel_format || info.num_bits != requested.num_bits ||
+        info.tile_mode != requested.tile_mode || info.array_mode != requested.array_mode ||
+        info.alt_tile != requested.alt_tile || info.bank_swizzle != requested.bank_swizzle ||
+        info.props.is_pow2 != requested.props.is_pow2 ||
+        info.guest_address != requested.guest_address || requested.guest_size < info.guest_size ||
+        requested.resources.levels <= info.resources.levels ||
+        requested.resources.levels > backing->image.image_ci.mipLevels) {
+        return false;
+    }
+    for (u32 mip = 0; mip < info.resources.levels; ++mip) {
+        const auto& a = info.mips_layout[mip];
+        const auto& b = requested.mips_layout[mip];
+        if (a.size != b.size || a.pitch != b.pitch || a.height != b.height || a.offset != b.offset) {
+            return false;
+        }
+    }
+    return true;
 }
 
 Image::~Image() = default;
@@ -260,7 +299,7 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
 
     if (needs_partial_transition || partially_transited) {
         if (!partially_transited) {
-            subresource_states.resize(info.resources.levels * info.resources.layers);
+            subresource_states.resize(backing->image.image_ci.mipLevels * info.resources.layers);
             std::fill(subresource_states.begin(), subresource_states.end(), last_state);
         }
 
@@ -271,7 +310,7 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
             needs_partial_transition
                 ? std::ranges::views::iota(subres_range->base.level,
                                            subres_range->base.level + subres_range->extent.levels)
-                : std::views::iota(0u, info.resources.levels);
+                : std::views::iota(0u, backing->image.image_ci.mipLevels);
         const auto layers =
             needs_partial_transition
                 ? std::ranges::views::iota(subres_range->base.layer,

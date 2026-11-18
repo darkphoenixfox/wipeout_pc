@@ -26,6 +26,8 @@
 #include "gow3_write_log.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_frame_capture.h"
+#include "video_core/renderer_vulkan/vk_occlusion_query.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 namespace AmdGpu {
@@ -335,12 +337,7 @@ void RunWriteData(Vulkan::Rasterizer& rasterizer, const u8* data) {
                 (header->type3.count.Value() - 2) * sizeof(u32));
 }
 
-void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
-    const auto& event_eos = *reinterpret_cast<const PM4CmdEventWriteEos*>(data);
-    // Copies deferred to the recording thread precede writes the guest sees.
-    rasterizer.WaitHostCopies();
-    rasterizer.WaitDeferredSignals();
-    rasterizer.ProcessDownloadImages();
+void SignalEos(const PM4CmdEventWriteEos& event_eos) {
     event_eos.SignalFence([](void* address, u64 value, u32 num_bytes) {
         auto* memory = Core::Memory::Instance();
         Gow3WriteLog::Note(reinterpret_cast<u64>(address), &value, num_bytes, Gow3WriteLog::Fence);
@@ -348,6 +345,29 @@ void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
             memcpy(address, &value, num_bytes);
         }
     });
+}
+
+void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
+    const auto event_eos = *reinterpret_cast<const PM4CmdEventWriteEos*>(data);
+    // gow3 (RecorderEos): as for EOP, the draw recording thread does not wait; the Vulkan
+    // recording thread writes the label after the copies queued before it. A GDS store
+    // reads a GPU result and still waits.
+    if (event_eos.command != PM4CmdEventWriteEos::Command::GdsStore &&
+        Vulkan::DrawPipe::OnStageB() && !Gow3Toggle::Disabled(Gow3Toggle::RecorderFences) &&
+        !Gow3Toggle::Disabled(Gow3Toggle::RecorderEos)) {
+        rasterizer.ProcessDownloadImages();
+        rasterizer.SignalAfterHostCopies([event_eos] { SignalEos(event_eos); });
+        Gow3Stats::eos_deferred.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    (event_eos.command == PM4CmdEventWriteEos::Command::GdsStore ? Gow3Stats::eos_gds
+                                                                 : Gow3Stats::eos_waited)
+        .fetch_add(1, std::memory_order_relaxed);
+    // Copies deferred to the recording thread precede writes the guest sees.
+    rasterizer.WaitHostCopies();
+    rasterizer.WaitDeferredSignals();
+    rasterizer.ProcessDownloadImages();
+    SignalEos(event_eos);
     if (event_eos.command == PM4CmdEventWriteEos::Command::GdsStore) {
         ASSERT(event_eos.size == 1);
         rasterizer.Finish();
@@ -481,7 +501,7 @@ u64 Liverpool::HashRegisterPacket(u64 checksum, const u32* words, u32 count) {
     return checksum;
 }
 
-void Liverpool::ApplyGraphicsRegisterPacket(Regs& regs, const PM4Header* header, u64& checksum,
+void Liverpool::ApplyGraphicsRegisterPacket(Regs& regs, const PM4Header* header, u64* checksum,
                                              RegDirty* dirty) {
     const u32 count = header->type3.NumWords();
     const auto* payload = reinterpret_cast<const u32*>(header + 2);
@@ -599,7 +619,9 @@ void Liverpool::ApplyGraphicsRegisterPacket(Regs& regs, const PM4Header* header,
     default:
         return;
     }
-    checksum = HashRegisterPacket(checksum, reinterpret_cast<const u32*>(header), count + 1);
+    if (checksum) {
+        *checksum = HashRegisterPacket(*checksum, reinterpret_cast<const u32*>(header), count + 1);
+    }
 }
 
 // gow3: GOW3_DCB_STATS=1 — structure of graphics command buffers (read-only scan, printed every
@@ -755,7 +777,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
         case 3:
             const u32 count = header->type3.NumWords();
             const PM4ItOpcode opcode = header->type3.opcode;
-            ApplyGraphicsRegisterPacket(regs, header, gfx_reg_checksum, &pipe_dirty);
+            ApplyGraphicsRegisterPacket(regs, header, hash_registers ? &gfx_reg_checksum : nullptr,
+                                        &pipe_dirty);
             // DmaData to 0x3022C does nothing here (skipped below): no need to wait.
             if (rasterizer && !PipelinedOpcode(opcode) &&
                 !(opcode == PM4ItOpcode::DmaData &&
@@ -915,6 +938,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 static std::once_flag predication_logged;
                 std::call_once(predication_logged,
                                [] { LOG_WARNING(Render, "Unimplemented IT_SET_PREDICATION"); });
+                if (Vulkan::FrameCapture::Active()) {
+                    Vulkan::FrameCapture::Note("\n  set_predication");
+                }
                 break;
             }
             case PM4ItOpcode::IndexType: {
@@ -1122,6 +1148,22 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (event->event_type.Value() == EventType::SoVgtStreamoutFlush) {
                     // registers: ApplyGraphicsRegisterPacket
                 } else if (event->event_index.Value() == EventIndex::ZpassDone) {
+                    // gow3: evidence for #109 (sun glare): which games dump the Z-pass counters,
+                    // where, and with which DB_COUNT_CONTROL. Once in the log, every dump in a
+                    // frame capture.
+                    static std::once_flag occlusion_logged;
+                    std::call_once(occlusion_logged, [&] {
+                        LOG_INFO(Render,
+                                 "gow3: occlusion queries in use: event type {}, results at {:#x}",
+                                 u32(event->event_type.Value()), event->Address<u64>());
+                    });
+                    if (Vulkan::FrameCapture::Active()) {
+                        char note[128];
+                        Vulkan::Occlusion::FormatDumpNote(
+                            note, sizeof(note), u32(event->event_type.Value()),
+                            event->Address<u64>(), regs.reg_array[0xA001]);
+                        Vulkan::FrameCapture::Note(note);
+                    }
                     if (event->event_type.Value() == EventType::PixelPipeStatDump) {
                         static constexpr u64 OcclusionCounterValidMask = 0x8000000000000000ULL;
                         static constexpr u64 OcclusionCounterStep = 0x2FFFFFFULL;
@@ -1157,6 +1199,17 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 const auto* dma_data = reinterpret_cast<const PM4DmaData*>(header);
                 if (dma_data->dst_addr_lo == 0x3022C || !rasterizer) {
                     break;
+                }
+                if (Vulkan::FrameCapture::Active() && dma_data->src_sel == DmaDataSrc::Data &&
+                    (dma_data->dst_sel == DmaDataDst::Memory ||
+                     dma_data->dst_sel == DmaDataDst::MemoryUsingL2)) {
+                    // gow3: #109 — a fill is how GNM clears occlusion-query results
+                    // (kOcclusionQueryOpClearAndBegin); its place among the dumps matters.
+                    char note[96];
+                    std::snprintf(note, sizeof(note), "\n  dma fill 0x%llx bytes %u value 0x%x",
+                                  static_cast<unsigned long long>(dma_data->DstAddress<VAddr>()),
+                                  dma_data->NumBytes(), dma_data->data);
+                    Vulkan::FrameCapture::Note(note);
                 }
                 if (rasterizer->RunInOrder(&RunDmaData, dma_data, sizeof(PM4DmaData),
                                            Gow3Toggle::PipelinedMemoryWrites) &&
@@ -1506,9 +1559,11 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                             header + 2, set_size);
                 // gow3: interleaves with the graphics stream at an unpredictable point, so
                 // draw-preparation workers cannot reproduce it: make their checksums differ.
-                gfx_reg_checksum = HashRegisterPacket(gfx_reg_checksum ^ 0xA5C0A5C0A5C0ull,
-                                                      reinterpret_cast<const u32*>(header),
-                                                      header->type3.NumWords() + 1);
+                if (hash_registers) {
+                    gfx_reg_checksum = HashRegisterPacket(gfx_reg_checksum ^ 0xA5C0A5C0A5C0ull,
+                                                          reinterpret_cast<const u32*>(header),
+                                                          header->type3.NumWords() + 1);
+                }
             }
             break;
         }

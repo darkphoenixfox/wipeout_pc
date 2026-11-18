@@ -26,6 +26,7 @@
 #define ERR_ALREADY_OPENED ((int32_t)0x80920004)
 #define ERR_NOT_INITIALIZED ((int32_t)0x80920005)
 #define PAD_HANDLE 1
+#define PAD2_HANDLE 2 /* user 2: split-screen (#80) */
 
 enum {
     BTN_L3=0x2, BTN_R3=0x4, BTN_OPTIONS=0x8, BTN_UP=0x10, BTN_RIGHT=0x20, BTN_DOWN=0x40, BTN_LEFT=0x80,
@@ -37,6 +38,8 @@ enum {
     /* Host-only actions of the keyboard map: dodge tilts the right stick (apply_dodge); rage and
      * grab press two buttons together (apply_combos). */
     DODGE=0x20000000, RAGE=0x10000000, GRAB=0x08000000,
+    /* WipEout's trick button (apply_trick): a side-shift or a barrel roll in one press (#207). */
+    TRICK=0x04000000,
 };
 typedef struct { uint16_t x, y; uint8_t id, reserve[3]; } PadTouch;
 typedef struct {
@@ -66,13 +69,20 @@ _Static_assert(__builtin_offsetof(PadData,timestamp)==80,"OrbisPadData timestamp
 _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout");
 
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
-static int initialized, opened, sdl_ready;
-static SDL_Gamepad *gamepad;
+static int initialized, opened, opened2, sdl_ready;
+static SDL_Gamepad *gamepad, *gamepad2;
 static size_t reads;
 static uint8_t connected_count;
 
 static uint64_t now_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000u+(uint64_t)t.tv_nsec/1000u; }
 static uint8_t axis(int16_t v) { int x=(v+32768)>>8; return (uint8_t)(x<0 ? 0 : x>255 ? 255 : x); }
+/* Round deadzone of percent% on one stick, rescaled so a full tilt still reaches the edge (#60). */
+static void stick_deadzone(uint8_t *x, uint8_t *y, int percent) {
+    if (percent<=0) return;
+    const float dx=(*x-127.5f)/127.5f, dy=(*y-127.5f)/127.5f, length=sqrtf(dx*dx+dy*dy), zone=percent/100.0f;
+    const float scale=length<=zone ? 0.0f : fminf(1.0f,(length-zone)/(1.0f-zone))/length;
+    *x=(uint8_t)lrintf(127.5f+dx*scale*127.5f); *y=(uint8_t)lrintf(127.5f+dy*scale*127.5f);
+}
 static uint8_t trigger(int16_t v) { int x=v>>7; return (uint8_t)(x<0 ? 0 : x>255 ? 255 : x); }
 static uint16_t touch_axis(float v, int max) {
     return (uint16_t)(v<=0.0f ? 0 : v>=1.0f ? max : (int)(v*max+0.5f));
@@ -110,7 +120,14 @@ static void play_click(PadData *d) {
     if (now>=down && now<up) d->buttons|=BTN_TOUCHPAD;
 }
 
-/* Opens the first gamepad SDL knows about; called under lock. */
+/* GOW3_GAMEPAD=N: player 1 is the Nth connected gamepad (#88: arcade cabinets with several
+ * sticks); the first when fewer are connected. */
+static int preferred_gamepad(int count) {
+    static int wanted;
+    if (!wanted) { const char *env=getenv("GOW3_GAMEPAD"); wanted=env && atoi(env)>0 ? atoi(env) : 1; }
+    return wanted<=count ? wanted-1 : 0;
+}
+/* Opens player 1's gamepad (preferred_gamepad); called under lock. */
 static SDL_Gamepad *current_gamepad(void) {
     if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
     if (sdl_ready<0) return NULL;
@@ -119,12 +136,28 @@ static SDL_Gamepad *current_gamepad(void) {
         int count=0;
         SDL_JoystickID *ids=SDL_GetGamepads(&count);
         if (ids && count>0) {
-            gamepad=SDL_OpenGamepad(ids[0]);
+            gamepad=SDL_OpenGamepad(ids[preferred_gamepad(count)]);
             if (gamepad) { ++connected_count; printf("Runtime: gamepad connected: %s\n",SDL_GetGamepadName(gamepad)); }
         }
         SDL_free(ids);
     }
     return gamepad;
+}
+/* Player 2's gamepad: the first connected one that is not player 1's; called under lock. */
+static SDL_Gamepad *second_gamepad(void) {
+    SDL_Gamepad *first=current_gamepad();
+    if (gamepad2 && !SDL_GamepadConnected(gamepad2)) { SDL_CloseGamepad(gamepad2); gamepad2=NULL; }
+    if (!gamepad2 && first) {
+        int count=0;
+        SDL_JoystickID *ids=SDL_GetGamepads(&count);
+        for (int i=0;ids && i<count && !gamepad2;++i) {
+            if (ids[i]==SDL_GetGamepadID(first)) continue;
+            gamepad2=SDL_OpenGamepad(ids[i]);
+            if (gamepad2) printf("Runtime: gamepad connected for player 2: %s\n",SDL_GetGamepadName(gamepad2));
+        }
+        SDL_free(ids);
+    }
+    return gamepad2;
 }
 /* Button sources: a host button or key and the PS4 button it presses. The defaults below can be
  * changed per PS4 button with GOW3_PAD_MAP (gamepad) and GOW3_KEY_MAP (keyboard), e.g.
@@ -140,7 +173,7 @@ static const struct { const char *name; uint32_t ps; } ps_names[]={
     {"l1",BTN_L1}, {"r1",BTN_R1}, {"l2",BTN_L2}, {"r2",BTN_R2}, {"l3",BTN_L3}, {"r3",BTN_R3},
     {"options",BTN_OPTIONS}, {"touchpad",CLICK_LEFT}, {"touchpad_left",CLICK_LEFT}, {"touchpad_right",CLICK_RIGHT},
     {"up",BTN_UP}, {"down",BTN_DOWN}, {"left",BTN_LEFT}, {"right",BTN_RIGHT},
-    {"dodge",DODGE}, {"rage",RAGE}, {"grab",GRAB},
+    {"dodge",DODGE}, {"rage",RAGE}, {"grab",GRAB}, {"trick",TRICK},
 };
 typedef struct { int source; uint32_t ps; } ButtonSource;
 typedef struct { ButtonSource entries[48]; size_t count; } ButtonMap;
@@ -160,7 +193,8 @@ static ButtonMap key_map={{
     {SDL_SCANCODE_R,BTN_L2}, {SDL_SCANCODE_F,BTN_R2}, {SDL_SCANCODE_Z,BTN_L3}, {SDL_SCANCODE_C,BTN_R3},
     {SDL_SCANCODE_RETURN,BTN_OPTIONS}, {SDL_SCANCODE_TAB,CLICK_LEFT}, {SDL_SCANCODE_BACKSPACE,CLICK_RIGHT},
     {SDL_SCANCODE_I,BTN_UP}, {SDL_SCANCODE_K,BTN_DOWN}, {SDL_SCANCODE_J,BTN_LEFT}, {SDL_SCANCODE_L,BTN_RIGHT},
-},17};
+    {SDL_SCANCODE_V,TRICK},
+},18};
 
 static char *trim(char *text) {
     while (*text==' ' || *text=='\t') ++text;
@@ -452,42 +486,16 @@ static bool qte_play(const bool *keys, uint64_t now) {
     return true;
 }
 
+static void neutral(PadData *d);
+static void read_gamepad(SDL_Gamepad *g, PadData *d);
 static void sample_host(PadData *d) {
-    memset(d,0,sizeof(*d));
-    d->left_x=d->left_y=d->right_x=d->right_y=128;
-    d->orientation[3]=1.0f;
-    d->connected=1; d->connected_count=connected_count ? connected_count : 1;
-    d->timestamp=now_us();
+    neutral(d);
     SDL_Gamepad *g=current_gamepad();
     watch_wheel();
     if (gow3gpu_overlay_captures_input()) { drop_wheel(); return; } /* settings menu open: neutral input */
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     load_button_maps();
-    if (g) {
-        for (size_t i=0;i<pad_map.count;++i)
-            if (SDL_GetGamepadButton(g,(SDL_GamepadButton)pad_map.entries[i].source)) d->buttons|=pad_map.entries[i].ps;
-        /* L1 + R1 + D-pad adjusts 3D depth and focus (gow3_overlay.cpp): the D-pad is not the game's. */
-        if (gow3gpu_overlay_stereo_combo()) d->buttons&=~(uint32_t)(BTN_UP|BTN_RIGHT|BTN_DOWN|BTN_LEFT);
-        const uint32_t mapped=d->buttons;
-        d->left_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTX)); d->left_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTY));
-        d->right_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTX)); d->right_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTY));
-        d->l2=trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFT_TRIGGER)); d->r2=trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
-        if (d->l2>30) d->buttons|=BTN_L2;
-        if (d->r2>30) d->buttons|=BTN_R2;
-        if (mapped & BTN_L2) d->l2=255;
-        if (mapped & BTN_R2) d->r2=255;
-        if (SDL_GetNumGamepadTouchpads(g)>0) {
-            const int fingers=SDL_GetNumGamepadTouchpadFingers(g,0);
-            for (int finger=0;finger<fingers && d->touch_count<2;++finger) {
-                bool down=false;
-                float x=0, y=0;
-                if (SDL_GetGamepadTouchpadFinger(g,0,finger,&down,&x,&y,NULL) && down) {
-                    d->touches[d->touch_count++]=(PadTouch){.x=touch_axis(x,1919),
-                        .y=touch_axis(y,942),.id=(uint8_t)finger};
-                }
-            }
-        }
-    }
+    read_gamepad(g,d);
     /* The keyboard works with or without a gamepad: its buttons add to the pad's, and a stick
      * follows the keys only while one of them is held. */
     if (!k) return;
@@ -507,13 +515,88 @@ static void sample_host(PadData *d) {
     key_axis(&d->right_x,k[SDL_SCANCODE_LEFT],k[SDL_SCANCODE_RIGHT]);
     key_axis(&d->right_y,k[SDL_SCANCODE_UP],k[SDL_SCANCODE_DOWN]);
 }
+/* A neutral, connected pad state. */
+static void neutral(PadData *d) {
+    memset(d,0,sizeof(*d));
+    d->left_x=d->left_y=d->right_x=d->right_y=128;
+    d->orientation[3]=1.0f;
+    d->connected=1; d->connected_count=connected_count ? connected_count : 1;
+    d->timestamp=now_us();
+}
+/* A gamepad's buttons (pad_map), sticks, triggers and touchpad; nothing without one. */
+static void read_gamepad(SDL_Gamepad *g, PadData *d) {
+    if (g) {
+        for (size_t i=0;i<pad_map.count;++i)
+            if (SDL_GetGamepadButton(g,(SDL_GamepadButton)pad_map.entries[i].source)) d->buttons|=pad_map.entries[i].ps;
+        /* L1 + R1 + D-pad adjusts 3D depth and focus (gow3_overlay.cpp): the D-pad is not the game's. */
+        if (gow3gpu_overlay_stereo_combo()) d->buttons&=~(uint32_t)(BTN_UP|BTN_RIGHT|BTN_DOWN|BTN_LEFT);
+        const uint32_t mapped=d->buttons;
+        d->left_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTX)); d->left_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTY));
+        d->right_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTX)); d->right_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTY));
+        const int deadzone=gow3gpu_stick_deadzone_percent();
+        stick_deadzone(&d->left_x,&d->left_y,deadzone); stick_deadzone(&d->right_x,&d->right_y,deadzone);
+        d->l2=trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFT_TRIGGER)); d->r2=trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+        if (d->l2>30) d->buttons|=BTN_L2;
+        if (d->r2>30) d->buttons|=BTN_R2;
+        if (mapped & BTN_L2) d->l2=255;
+        if (mapped & BTN_R2) d->r2=255;
+        if (SDL_GetNumGamepadTouchpads(g)>0) {
+            const int fingers=SDL_GetNumGamepadTouchpadFingers(g,0);
+            for (int finger=0;finger<fingers && d->touch_count<2;++finger) {
+                bool down=false;
+                float x=0, y=0;
+                if (SDL_GetGamepadTouchpadFinger(g,0,finger,&down,&x,&y,NULL) && down) {
+                    d->touches[d->touch_count++]=(PadTouch){.x=touch_axis(x,1919),
+                        .y=touch_axis(y,942),.id=(uint8_t)finger};
+                }
+            }
+        }
+    }
+}
 
 /* GOW3_PAD_FILE=<file>: scripted input for automated runs. The file holds whitespace-separated
  * tokens, re-read when it changes: button names (cross circle square triangle l1 r1 l2 r2 l3 r3
  * options touchpad touchpad_left touchpad_right up down left right) are held while listed;
  * touchpad is the left side; lx= ly= rx= ry= (0..255) override the sticks; shot saves a
- * screenshot (as F12, without taking the focus). An empty file releases everything. */
-static struct { uint32_t buttons; int stick[4]; } injected={0,{-1,-1,-1,-1}};
+ * screenshot (as F12, without taking the focus); tokens after p2 are player 2's (user 2 then
+ * stays logged in, as with a second gamepad). An empty file releases everything. */
+typedef struct { uint32_t buttons; int stick[4]; float gyro[3]; int has_gyro; } Injected;
+static Injected injected={.stick={-1,-1,-1,-1}}, injected2={.stick={-1,-1,-1,-1}};
+static int injected2_seen;
+/* Motion sensors (#18): the gamepad's gyro (rad/s) and accelerometer (in g), and the orientation
+ * integrated from the gyro as shadPS4 does it; scePadResetOrientation starts it over. The game's
+ * own Motion control option steers with them. One per player; called under lock. */
+typedef struct { SDL_Gamepad *g; float q[4]; uint64_t last; } Motion;
+static Motion motions[2]={{.q={0,0,0,1}},{.q={0,0,0,1}}};
+static void read_motion(Motion *m, SDL_Gamepad *g, const Injected *in, PadData *d) {
+    float gyro[3]={0,0,0}, accel[3]={0,0,0};
+    int have=0;
+    if (g && g!=m->g) {
+        m->g=g;
+        SDL_SetGamepadSensorEnabled(g,SDL_SENSOR_GYRO,true);
+        SDL_SetGamepadSensorEnabled(g,SDL_SENSOR_ACCEL,true);
+    }
+    if (g && SDL_GetGamepadSensorData(g,SDL_SENSOR_GYRO,gyro,3)) {
+        have=1;
+        if (SDL_GetGamepadSensorData(g,SDL_SENSOR_ACCEL,accel,3))
+            for (int i=0;i<3;++i) d->acceleration[i]=accel[i]/SDL_STANDARD_GRAVITY;
+    }
+    if (in->has_gyro) { memcpy(gyro,in->gyro,sizeof(gyro)); have=1; }
+    const float dt=m->last && d->timestamp>m->last ? (float)(d->timestamp-m->last)/1e6f : 0;
+    m->last=d->timestamp;
+    if (have) {
+        memcpy(d->angular_velocity,gyro,sizeof(gyro));
+        if (dt>0 && dt<0.5f) { /* q += q * (0, w) / 2 * dt, then normalized */
+            float *q=m->q;
+            const float x=q[3]*gyro[0]+q[1]*gyro[2]-q[2]*gyro[1], y=q[3]*gyro[1]+q[2]*gyro[0]-q[0]*gyro[2],
+                        z=q[3]*gyro[2]+q[0]*gyro[1]-q[1]*gyro[0], w=-q[0]*gyro[0]-q[1]*gyro[1]-q[2]*gyro[2];
+            q[0]+=0.5f*x*dt; q[1]+=0.5f*y*dt; q[2]+=0.5f*z*dt; q[3]+=0.5f*w*dt;
+            const float n=sqrtf(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+            if (n>0) for (int i=0;i<4;++i) q[i]/=n;
+        }
+    }
+    memcpy(d->orientation,m->q,sizeof(m->q));
+}
 static int replay_armed;      /* 1 while a GOW3_PAD_REPLAY recording plays, 2 once it ended */
 static uint64_t replay_start; /* 0: (re)start at the next sample */
 static void read_inject(void) {
@@ -536,14 +619,19 @@ static void read_inject(void) {
     FILE *f=fopen(path,"r");
     if (!f) return;
     static const char *sticks[]={"lx=","ly=","rx=","ry="};
-    injected.buttons=0;
-    for (int i=0;i<4;++i) injected.stick[i]=-1;
+    injected=injected2=(Injected){.stick={-1,-1,-1,-1}};
+    Injected *target=&injected;
     char token[64];
     while (fscanf(f,"%63s",token)==1) {
         if (!strcmp(token,"replay") && replay_armed!=1) { replay_armed=1; replay_start=0; } /* GOW3_PAD_REPLAY */
         if (!strcmp(token,"shot")) gow3gpu_request_screenshot();
-        for (size_t i=0;i<sizeof(ps_names)/sizeof(*ps_names);++i) if (!strcmp(token,ps_names[i].name)) injected.buttons|=ps_names[i].ps;
-        for (int i=0;i<4;++i) if (!strncmp(token,sticks[i],3)) { int v=atoi(token+3); injected.stick[i]=v<0 ? 0 : v>255 ? 255 : v; }
+        if (!strcmp(token,"p2")) { target=&injected2; injected2_seen=1; }
+        for (size_t i=0;i<sizeof(ps_names)/sizeof(*ps_names);++i) if (!strcmp(token,ps_names[i].name)) target->buttons|=ps_names[i].ps;
+        for (int i=0;i<4;++i) if (!strncmp(token,sticks[i],3)) { int v=atoi(token+3); target->stick[i]=v<0 ? 0 : v>255 ? 255 : v; }
+        /* gx= gy= gz=: the gyro in degrees per second (motion control tests, #18) */
+        if (token[0]=='g' && token[1]>='x' && token[1]<='z' && token[2]=='=') {
+            target->gyro[token[1]-'x']=(float)atof(token+3)*3.14159265f/180.0f; target->has_gyro=1;
+        }
     }
     fclose(f);
     printf("Runtime: pad file: buttons 0x%x sticks %d %d %d %d\n",injected.buttons,
@@ -669,6 +757,26 @@ static void note_pause_key(const PadData *d) {
     held=pause;
 }
 
+/* GOW3_PAD_SCHEME=racer (#99, as WipEout 2048's "Racer" on the Vita): R2 accelerates, L2 brakes
+ * (both air brakes), Square with the stick left or right is that air brake, Cross fires, Circle
+ * absorbs. Turned into the game's default layout (Cross accelerate, L2/R2 air brakes, Square fire)
+ * only while R2 or L2 is held: menus and the pause menu keep Cross to confirm and Square. */
+static void apply_scheme(PadData *d) {
+    static int racer=-1;
+    if (racer<0) { const char *env=getenv("GOW3_PAD_SCHEME"); racer=env && !strcmp(env,"racer"); }
+    if (!racer || !(d->buttons & (BTN_L2|BTN_R2))) return;
+    const uint32_t in=d->buttons;
+    const uint8_t brake=d->l2;
+    uint32_t out=in & ~(BTN_CROSS|BTN_SQUARE|BTN_L2|BTN_R2);
+    d->l2=d->r2=0;
+    if (in & BTN_R2) out|=BTN_CROSS;
+    if (in & BTN_CROSS) out|=BTN_SQUARE;
+    if (in & BTN_L2) { out|=BTN_L2|BTN_R2; d->l2=d->r2=brake ? brake : 255; }
+    if ((in & BTN_SQUARE) && d->left_x<96) { out|=BTN_L2; d->l2=255; }
+    if ((in & BTN_SQUARE) && d->left_x>160) { out|=BTN_R2; d->r2=255; }
+    d->buttons=out;
+}
+
 /* One source for two buttons pressed in the same read (GOW3_KEY_MAP "rage=<key>", "grab=<key>"):
  * L3 + R3 for Rage of Sparta, L1 + Circle for the grab. */
 static void apply_combos(PadData *d) {
@@ -700,6 +808,38 @@ static void apply_dodge(PadData *d) {
     if (held || d->timestamp<dodge.until) { d->right_x=dodge.x; d->right_y=dodge.y; }
 }
 
+/* #207: the trick button (GOW3_PAD_MAP / GOW3_KEY_MAP "trick=<button>"). Pressed with one airbrake
+ * held (L2 or R2), it side-shifts: the game's double tap of that airbrake (release, press, release,
+ * then the player's hold again). Pressed while steering left or right (stick or D-pad), it barrel-rolls:
+ * the game's left-right-left on the stick, with the side held as the first. Each step lasts TRICK_STEP_US, longer
+ * than a game frame at 30 FPS, and the whole move stays inside the game's double-tap window. */
+enum { TRICK_STEP_US=40000 };
+static struct { bool held; int kind; uint32_t brake; int side; uint64_t start; } trick;
+static void apply_trick(PadData *d) {
+    const bool held=(d->buttons & TRICK)!=0;
+    d->buttons&=~TRICK;
+    if (held && !trick.held && !trick.kind) {
+        const uint32_t brake=d->buttons & (BTN_L2|BTN_R2);
+        const int side=d->left_x<64 || (d->buttons & BTN_LEFT) ? -1 : d->left_x>192 || (d->buttons & BTN_RIGHT) ? 1 : 0;
+        if (brake==BTN_L2 || brake==BTN_R2) { trick.kind=1; trick.brake=brake; }
+        else if (side) { trick.kind=2; trick.side=side; }
+        trick.start=d->timestamp;
+    }
+    trick.held=held;
+    if (!trick.kind) return;
+    const uint64_t step=(d->timestamp-trick.start)/TRICK_STEP_US;
+    if (step>=3) { trick.kind=0; return; } /* the player's own input again */
+    if (trick.kind==1) {
+        const bool down=step==1;
+        if (down) d->buttons|=trick.brake; else d->buttons&=~trick.brake;
+        if (trick.brake==BTN_L2) d->l2=down ? 255 : 0; else d->r2=down ? 255 : 0;
+    } else {
+        /* the other side, back, then centred: the player's own side next is not a new turn */
+        d->left_x=step==0 ? (trick.side<0 ? 255 : 0) : step==1 ? (trick.side<0 ? 0 : 255) : 128;
+        d->buttons&=~(BTN_LEFT|BTN_RIGHT);
+    }
+}
+
 /* After the menu or the text dialog closes, buttons still held (the Cross that accepted a
  * name) stay hidden until released: the game would take them as a new press. */
 static int hold_after_capture;
@@ -709,13 +849,16 @@ static void sample(PadData *d) {
     record_sample(d); /* the click sources as they are: a replay plays them again */
     read_inject();
     replay_sample(d);
+    read_motion(&motions[0],gamepad,&injected,d);
     d->buttons|=injected.buttons;
     if (injected.buttons & BTN_L2) d->l2=255;
     if (injected.buttons & BTN_R2) d->r2=255;
     uint8_t *axes[4]={&d->left_x,&d->left_y,&d->right_x,&d->right_y};
     for (int i=0;i<4;++i) if (injected.stick[i]>=0) *axes[i]=(uint8_t)injected.stick[i];
+    apply_scheme(d);
     apply_combos(d);
     apply_dodge(d);
+    apply_trick(d);
     apply_mouse_aim(d);
     note_pause_key(d);
     play_click(d);
@@ -725,41 +868,78 @@ static void sample(PadData *d) {
     }
 }
 
+static void sample_second(PadData *d) {
+    neutral(d);
+    read_inject();
+    SDL_Gamepad *g=second_gamepad();
+    d->connected=g || injected2_seen;
+    if (gow3gpu_overlay_captures_input()) return;
+    load_button_maps();
+    read_gamepad(g,d);
+    read_motion(&motions[1],g,&injected2,d);
+    d->buttons|=injected2.buttons;
+    if (d->buttons & (CLICK_LEFT|CLICK_RIGHT)) d->buttons|=BTN_TOUCHPAD; /* no touch surface to aim */
+    d->buttons&=~(CLICK_LEFT|CLICK_RIGHT|DODGE|RAGE|GRAB|TRICK);
+    if (injected2.buttons & BTN_L2) d->l2=255;
+    if (injected2.buttons & BTN_R2) d->r2=255;
+    uint8_t *axes[4]={&d->left_x,&d->left_y,&d->right_x,&d->right_y};
+    for (int i=0;i<4;++i) if (injected2.stick[i]>=0) *axes[i]=(uint8_t)injected2.stick[i];
+    apply_scheme(d);
+}
+/* User 2 is logged in while a second gamepad is connected, or the pad file has p2 tokens. */
+int runtime_pad_second_user(void) {
+    pthread_mutex_lock(&lock);
+    if (sdl_ready>0 || SDL_WasInit(SDL_INIT_VIDEO)) second_gamepad(); /* never the first SDL init */
+    read_inject();
+    const int present=gamepad2 || injected2_seen;
+    pthread_mutex_unlock(&lock);
+    return present;
+}
+
+static int valid(int32_t handle) { return handle==PAD_HANDLE ? opened : handle==PAD2_HANDLE ? opened2 : 0; }
 static ABI int32_t pad_init(void) { pthread_mutex_lock(&lock); initialized=1; pthread_mutex_unlock(&lock); return 0; }
+volatile int runtime_pad_opened;
 static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const void *param) {
     (void)param;
     if (!initialized) return ERR_NOT_INITIALIZED;
-    if (user!=1) return ERR_INVALID_ARG;
+    if (user!=1 && user!=2) return ERR_INVALID_ARG;
     if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
     if (index) return ERR_INVALID_ARG;
+    int *flag=user==1 ? &opened : &opened2;
     pthread_mutex_lock(&lock);
-    int already=opened; opened=1;
+    int already=*flag; *flag=1;
     pthread_mutex_unlock(&lock);
     if (already) return ERR_ALREADY_OPENED;
-    puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
-    return PAD_HANDLE;
+    runtime_pad_opened=1;
+    puts(user==1 ? "Runtime: pad opened for user 1 (SDL gamepad or keyboard)"
+                 : "Runtime: pad opened for user 2 (second gamepad)");
+    return user==1 ? PAD_HANDLE : PAD2_HANDLE;
 }
 static ABI int32_t pad_close(int32_t handle) {
-    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
-    opened=0; return 0;
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
+    *(handle==PAD_HANDLE ? &opened : &opened2)=0; return 0;
 }
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
-    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
     pthread_mutex_lock(&lock);
-    sample(data); ++reads;
+    const int first=handle==PAD_HANDLE;
+    if (first) { sample(data); ++reads; }
+    else sample_second(data);
     pthread_mutex_unlock(&lock);
+    if (first) runtime_user_events(); /* user 2 logging in or out (split-screen) */
+    if (first) runtime_cube_budget_poll();
     return 0;
 }
 /* Buffered read: the port samples once per call, so one entry is returned. */
 static ABI int32_t pad_read(int32_t handle, PadData *data, int32_t count) {
-    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
     if (!data || count<1 || count>64) return ERR_INVALID_ARG;
     pad_read_state(handle,data);
     return 1;
 }
 static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
-    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
     if (!info) return ERR_INVALID_ARG;
     memset(info,0,sizeof(*info));
     info->pixel_density=44.86f; info->resolution_x=1920; info->resolution_y=943;
@@ -772,21 +952,28 @@ static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
     return 0;
 }
 static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
-    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
     if (!param) return ERR_INVALID_ARG;
     pthread_mutex_lock(&lock);
-    SDL_Gamepad *g=current_gamepad();
+    SDL_Gamepad *g=handle==PAD2_HANDLE ? second_gamepad() : current_gamepad();
     /* The menu's vibration strength scales the game's motors (0: off). */
     const unsigned percent=(unsigned)gow3gpu_vibration_percent();
     if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257u*percent/100u),(uint16_t)(param[1]*257u*percent/100u),1000);
     pthread_mutex_unlock(&lock);
     return 0;
 }
-static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }
+static ABI int32_t pad_ok_handle(int32_t handle) { return valid(handle) ? 0 : ERR_INVALID_HANDLE; }
 static ABI int32_t pad_ok_handle_flag(int32_t handle, uint8_t flag) { (void)flag; return pad_ok_handle(handle); }
+static ABI int32_t pad_reset_orientation(int32_t handle) {
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
+    pthread_mutex_lock(&lock);
+    memcpy(motions[handle==PAD2_HANDLE].q,(const float[4]){0,0,0,1},sizeof(float[4]));
+    pthread_mutex_unlock(&lock);
+    return 0;
+}
 
 static ABI int32_t pad_light_bar(int32_t handle, const uint8_t *rgb) {
-    if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
+    if (!valid(handle)) return ERR_INVALID_HANDLE;
     (void)rgb; return 0;
 }
 static const RuntimeExport exports[]={
@@ -794,7 +981,7 @@ static const RuntimeExport exports[]={
     {"scePadInit",pad_init}, {"scePadOpen",pad_open}, {"scePadClose",pad_close},
     {"scePadReadState",pad_read_state}, {"scePadRead",pad_read},
     {"scePadGetControllerInformation",pad_info}, {"scePadSetVibration",pad_vibration},
-    {"scePadResetOrientation",pad_ok_handle},
+    {"scePadResetOrientation",pad_reset_orientation},
     {"scePadSetAngularVelocityDeadbandState",pad_ok_handle_flag}, {"scePadSetTiltCorrectionState",pad_ok_handle_flag},
     {"scePadSetMotionSensorState",pad_ok_handle_flag},
 };

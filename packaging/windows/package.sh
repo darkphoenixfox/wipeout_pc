@@ -3,13 +3,14 @@
 # with PyInstaller so players need no Python), gow3-probe.exe with the MSYS2 CLANG64 DLLs it needs,
 # the preparation scripts and run.py. Run from an MSYS2 CLANG64 shell after `bash build.sh`.
 # Freezing uses a Windows Python 3.10+ (python.org; WINPYTHON overrides) and a private venv in
-# out/pyenv with PyInstaller and Pillow (the game icon and the Steam pictures need it). The
-# temporal upscalers are off, so neither the FSR 4 assets nor the
-# DLSS runtime are packaged.
+# out/pyenv with PyInstaller and Pillow (the game icon and the Steam pictures need it). The DLSS
+# bridge (out/gow3_dlss.dll, build_dlss.sh) ships with its license; NVIDIA's runtime never does:
+# the launcher downloads it from NVIDIA on request. DLSS_REQUIRED=1 (the release build) stops when
+# the bridge is missing. The FSR 4 assets are not packaged.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 source ./msys2-env.sh
-[[ -f out/gow3-probe.exe && -f out/gow3-gpu-capabilities.exe && -f out/gow3-play.exe ]] || { echo 'Build first: bash build.sh' >&2; exit 1; }
+[[ -f out/gow3-probe.exe && -f out/gow3-gpu-capabilities.exe && -f out/gow3-play.exe && -f out/gow3-server.exe ]] || { echo 'Build first: bash build.sh' >&2; exit 1; }
 
 # A Windows Python (not MSYS2's) for PyInstaller.
 python=${WINPYTHON:-}
@@ -45,7 +46,7 @@ cp -r "out/pyi-dist/WipEout/." "$dest/"
 llvm-strip -o "$dest/Play WipEout.exe" out/gow3-play.exe
 cp launcher/gow3.ico launcher/gow3.png launcher/RussoOne-Regular.ttf launcher/OFL-RussoOne.txt "$dest/launcher/"
 # The executables without debug information (out/ keeps the symbols for crash reports).
-for exe in gow3-probe.exe gow3-gpu-capabilities.exe; do
+for exe in gow3-probe.exe gow3-gpu-capabilities.exe gow3-server.exe; do
     llvm-strip --strip-debug -o "$dest/bin/$exe" "out/$exe"
 done
 # The LeiaSR bridge (gpu/leiasr_bridge, built with MSVC and the LeiaSR SDK) when it was built: 3D
@@ -60,6 +61,14 @@ ldd "$dest/bin/gow3-probe.exe" "$dest/bin/gow3-gpu-capabilities.exe" |
     awk '/\/clang64\/bin\// {print $3}' | sort -u | while read -r dll; do
         cp -u "$dll" "$dest/bin/"
     done
+if [[ -f out/gow3_dlss.dll ]]; then
+    cp out/gow3_dlss.dll "$dest/bin/"
+    cp gpu/dlss_bridge/LICENSE.txt "$dest/bin/gow3_dlss-LICENSE.txt"
+    [[ -f out/NVIDIA-DLSS-LICENSE.txt ]] && cp out/NVIDIA-DLSS-LICENSE.txt "$dest/bin/"
+elif [[ ${DLSS_REQUIRED:-} == 1 ]]; then
+    echo 'out/gow3_dlss.dll is missing: run packaging/windows/build_dlss.sh' >&2
+    exit 1
+fi
 cp -r scripts patches "$dest/"
 cp run.py LICENSE README.md packaging/windows/README-Windows.txt "$dest/"
 find "$dest" -name __pycache__ -prune -exec rm -r {} +

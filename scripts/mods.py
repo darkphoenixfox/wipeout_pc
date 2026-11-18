@@ -313,36 +313,103 @@ def apply_preset(preset, available):
 # what it linked and where to. A network share (SMB) refuses junctions too: a folder is then
 # mirrored instead (real directories, files hard-linked), which is not a link and so is not
 # recorded here - expand()/remove() treat it as the ordinary directory it has become.
+#
+# A process started with Windows' redirection trust policy (RedirectionGuard: Armoury Crate on
+# the ROG Ally starts games this way, and children inherit it) may create folder links but not
+# follow ones a non-administrator made: ERROR_UNTRUSTED_MOUNT_POINT (#78). The first folder link
+# is tried; if it is refused, every folder becomes a real directory of hard-linked files for the
+# rest of this process.
+#
+# Under Wine/Proton the game could not read files through folder links Python itself could follow
+# (#39: data/xml/mjolnirdata.xml "not found" through the game + update view), so there folders are
+# always mirrored and files hard-linked.
 LINKED = {}
+# A dict: files of LARGE_FILE bytes or more that could not be linked are recorded here (path in
+# the view -> file) and left out instead of copied (game_update.create_view; run.py mounts them).
+UNLINKED = None
+LARGE_FILE = 64 << 20
+UNTRUSTED_MOUNT_POINT = 448
+
+
+def _under_wine():
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+        return hasattr(ctypes.windll.ntdll, 'wine_get_version')
+    except (ImportError, OSError, AttributeError):
+        return False
+
+
+WINE = _under_wine()
+MIRROR_DIRECTORIES = WINE
+
+
+def _mirror_directory(link, target):
+    # Real directories whose files are hard-linked (or copied across volumes) by make_link, so
+    # the game reads real files through the view without copying the data. CreateJunction
+    # leaves the empty directory behind when it refuses the reparse point, so mkdir must
+    # tolerate it. Unlike a junction this is a plain directory, so it is not recorded in LINKED.
+    link.mkdir(exist_ok=True)
+    for entry in target.iterdir():
+        make_link(link / entry.name, entry)
+
+
+def _mirror_if_refused(link, target):
+    """True when this process may not follow the folder link just made (redirection trust): the
+    link is replaced by a mirrored folder, and the rest of the process mirrors too."""
+    global MIRROR_DIRECTORIES
+    try:
+        os.listdir(link)
+        return False
+    except OSError as error:
+        if getattr(error, 'winerror', None) != UNTRUSTED_MOUNT_POINT:
+            raise
+    if link.is_symlink():
+        link.unlink()
+    else:  # a junction
+        os.rmdir(link)
+    MIRROR_DIRECTORIES = True
+    print('Mods: this process may not follow folder links (Windows redirection trust); '
+          'using folders of hard-linked files instead', file=sys.stderr)
+    _mirror_directory(link, target)
+    return True
 
 
 def make_link(link, target):
-    try:
-        link.symlink_to(target, target_is_directory=target.is_dir())
+    if os.name == 'nt' and MIRROR_DIRECTORIES and target.is_dir():
+        _mirror_directory(link, target)
         return
+    try:
+        if WINE:
+            raise OSError('Wine: hard links, not symlinks')
+        link.symlink_to(target, target_is_directory=target.is_dir())
     except OSError:
         if os.name != 'nt':
             raise
+    else:
+        if os.name == 'nt' and target.is_dir():
+            _mirror_if_refused(link, target)
+        return
     if target.is_dir():
         try:
             import _winapi
             _winapi.CreateJunction(str(target), str(link))
         except OSError:
-            # A network share supports neither symlinks nor junctions. Mirror the folder:
-            # real directories whose files are hard-linked (or copied across volumes) by
-            # make_link, so the game reads real files through the view without copying the
-            # data. CreateJunction leaves the empty directory behind when it refuses the
-            # reparse point, so mkdir must tolerate it. Unlike a junction this is a plain
-            # directory, so it is not recorded in LINKED and needs no special handling when
-            # the view is expanded or removed.
-            link.mkdir(exist_ok=True)
-            for entry in target.iterdir():
-                make_link(link / entry.name, entry)
+            # A network share supports neither symlinks nor junctions: mirror the folder.
+            _mirror_directory(link, target)
+            return
+        if _mirror_if_refused(link, target):
             return
     else:
         try:
             os.link(target, link)
         except OSError:
+            # A drive without hard links (exFAT, FAT32) copied the whole game at every start
+            # (#63). With UNLINKED set, large files are left out for the caller to mount.
+            if UNLINKED is not None and target.stat().st_size >= LARGE_FILE:
+                UNLINKED[str(link)] = target
+                return
             shutil.copy2(target, link)
     LINKED[str(link)] = target
 

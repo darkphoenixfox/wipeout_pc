@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <time.h>
+#include <x86intrin.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -15,8 +16,13 @@
 #include <sys/resource.h>
 #endif
 #include "common/assert.h"
+#include "gow3_frame_log.h"
 #include "gow3_toggles.h"
+#include "gow3_perf_stats.h"
 #include "gow3_settings.h"
+extern "C" int runtime_music_in_race(void); // src/runtime_music.c
+extern "C" int runtime_wipeout_paused(void); // src/probe.c
+extern "C" void runtime_set_target_fps(double fps); // src/runtime_extra.c
 #include "gow3_graphics.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "common/debug.h"
@@ -326,6 +332,27 @@ void VideoOutDriver::Flip(const Request& req) {
         static u32 frames;
         static double worst_ms;
         const auto now = Clock::now();
+        // gow3: GOW3_FRAME_LOG, one line of cumulative counters per flip (gow3_frame_log.h).
+        static FILE* const frame_log = [] {
+            const char* path = std::getenv("GOW3_FRAME_LOG");
+            FILE* file = path && *path ? std::fopen(path, "w") : nullptr;
+            if (file) {
+                std::fputs(Gow3FrameLog::Header, file);
+            }
+            return file;
+        }();
+        if (frame_log) {
+            const Gow3FrameLog::Sample sample{
+                Gow3FrameLog::MsOfDay(std::chrono::system_clock::now()),
+                u64(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch())
+                        .count()),
+                Gow3Stats::draws.load(std::memory_order_relaxed),
+                Gow3Stats::gpu_user_us.load(std::memory_order_relaxed) +
+                    Gow3Stats::gpu_sys_us.load(std::memory_order_relaxed),
+                Gow3Stats::pipe_busy_cycles.load(std::memory_order_relaxed), __rdtsc()};
+            std::fputs(Gow3FrameLog::Format(sample).c_str(), frame_log);
+            std::fflush(frame_log); // the benchmark ends the game with a signal
+        }
         const double frame_ms = std::chrono::duration<double, std::milli>(now - last).count();
         worst_ms = std::max(worst_ms, frame_ms);
         static std::vector<double> intervals;
@@ -527,6 +554,16 @@ void VideoOutDriver::Flip(const Request& req) {
                         Gow3Stats::tick_wait_ns.exchange(0) / (window * 1e7),
                         frames ? double(Gow3Stats::reduced_draws.exchange(0)) / frames : 0.0,
                         frames ? double(Gow3Stats::scene_draws.exchange(0)) / frames : 0.0);
+            if (frames) {
+                std::printf("Fence waits: per frame %.1f EOS handed to the recording thread, %.1f "
+                            "waited, %.1f GDS stores; downloads %.1f waited, %.1f skipped (none "
+                            "queued)\n",
+                            double(Gow3Stats::eos_deferred.exchange(0)) / frames,
+                            double(Gow3Stats::eos_waited.exchange(0)) / frames,
+                            double(Gow3Stats::eos_gds.exchange(0)) / frames,
+                            double(Gow3Stats::download_waits.exchange(0)) / frames,
+                            double(Gow3Stats::download_waits_skipped.exchange(0)) / frames);
+            }
             presenter->GetRasterizer().GetPipelineCache().ReportCompilerStats();
             Vulkan::WaitDiagnostics::Report();
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
@@ -625,6 +662,8 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
         port->flip_status.submit_tsc = Libraries::Kernel::sceKernelReadTsc();
     }
 
+    // gow3 (GOW3_CPU_PROFILE): the game's frames, per flip.
+    Gow3PerfStats::game_frames.fetch_add(1, std::memory_order_relaxed);
     if (!is_eop) {
         // Non EOP flips can arrive from any thread so ask GPU thread to perform them
         liverpool->SendCommand([=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop); });
@@ -670,8 +709,7 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
 }
 
 void VideoOutDriver::PresentThread(std::stop_token token) {
-    const std::chrono::nanoseconds vblank_period(1000000000 /
-                                                 EmulatorSettings.GetVblankFrequency());
+    const std::chrono::nanoseconds vblank_period(EmulatorSettings.GetVblankPeriodNs());
 
     Common::SetCurrentThreadName("shadPS4:PresentThread");
     Common::SetCurrentThreadRealtime(vblank_period);
@@ -683,17 +721,51 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // gow3: the in-game menu changes the limit live (Gow3Settings::fps_limit); GOW3_FPS_LIMIT
     // and the uncapped presets keep their fixed limit.
     const bool fixed_limit = std::getenv("GOW3_FPS_LIMIT") || EmulatorSettings.GetVblankFrequency() == 480;
+    // gow3 (#118): WipEout's menus step their animations once a frame (the medal, the blinking
+    // marker, the ship turning in ship select): above 60 FPS they ran fast. The menus stay at 60,
+    // and so does a paused race (pause menu, photo mode: its camera turns once a frame); races keep
+    // the limit. GOW3_MENU_FPS=0 turns it off.
+    static const bool menu_cap = [] {
+        const char* value = std::getenv("GOW3_MENU_FPS");
+        return value && value[0] == '6';
+    }();
     const auto current_limit = [&] {
         const auto& s = Gow3Settings::Get();
-        return fixed_limit ? EmulatorSettings.GetFrameLimit()
-                           : u32(Gow3Graphics::PresentLimit(s.fps_limit, s.applied_engine_fps));
+        const u32 limit = fixed_limit ? EmulatorSettings.GetFrameLimit()
+                                      : u32(Gow3Graphics::PresentLimit(s.fps_limit, s.applied_engine_fps));
+        // Zone points follow time at any frame rate: patch "Bug Fix - Zone points above 60 FPS".
+        return menu_cap && (!runtime_music_in_race() || runtime_wipeout_paused()) &&
+                       (limit == 0 || limit > 60)
+                   ? 60u
+                   : limit;
+    };
+    // gow3: a limit just above the display's rate (60 on a 59.94 Hz monitor, 120 on 119.88)
+    // spaces the flips by the display's refresh: at an exact 60 FPS VSync fell a frame behind
+    // every ~17 s, then every flip waited for the display and frames alternated one and two
+    // refreshes (felt like 30-35 FPS while the counter said 60).
+    const double display_hz = Gow3DisplayRefreshRate();
+    const auto limit_period = [display_hz](u32 limit) {
+        if (!limit) {
+            return std::chrono::nanoseconds(0);
+        }
+        const double hz = limit > display_hz && limit - display_hz < 0.5 ? display_hz : limit;
+        return std::chrono::nanoseconds(u64(1e9 / hz + 0.5));
+    };
+    // gow3: the rate the frames aim at, for what follows the frame rate (WipEout's reflection
+    // cubes): the limit, or the vblank rate without one, and the display's rate with VSync.
+    const auto report_target = [&](u32 limit) {
+        double target = limit ? double(limit) : 1e9 / double(vblank_period.count());
+        if (Gow3Settings::Get().vsync && display_hz > 0.0 && display_hz < target) {
+            target = display_hz;
+        }
+        runtime_set_target_fps(target);
     };
     u32 frame_limit = current_limit();
-    auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
-                                    : std::chrono::nanoseconds(0);
+    report_target(frame_limit);
+    auto frame_period = limit_period(frame_limit);
     auto next_flip = std::chrono::steady_clock::now();
-    std::printf("VideoOut: vblank %u Hz, frame limit %u FPS\n",
-                EmulatorSettings.GetVblankFrequency(), frame_limit);
+    std::printf("VideoOut: vblank %.3f Hz, frame limit %u FPS (flips %.3f ms apart)\n",
+                1e9 / vblank_period.count(), frame_limit, frame_period.count() / 1e6);
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
@@ -712,10 +784,11 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     while (!token.stop_requested()) {
         if (const u32 limit = current_limit(); limit != frame_limit) {
             frame_limit = limit;
-            frame_period = limit ? std::chrono::nanoseconds(1000000000 / limit) : std::chrono::nanoseconds(0);
+            frame_period = limit_period(limit);
             immediate_flips = limit != 0;
             next_flip = std::chrono::steady_clock::now();
             std::printf("VideoOut: frame limit %u FPS\n", limit);
+            report_target(limit);
         }
         timer.Start();
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;

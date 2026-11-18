@@ -14,10 +14,13 @@ int main() {
 #ifdef _WIN32
     _set_error_mode(_OUT_TO_STDERR);
 #endif
-    assert(UseOnDemandPipelines(true, true, false));
-    assert(!UseOnDemandPipelines(false, true, false));
-    assert(!UseOnDemandPipelines(true, false, false));
-    assert(!UseOnDemandPipelines(true, true, true));
+    // Explicit loading-screen mode must not be bypassed by supported pipeline binaries.
+    assert(!UseOnDemandPipelines(true, true, false, false));
+    // Background mode keeps on-demand binaries and the existing warm-up fallbacks.
+    assert(UseOnDemandPipelines(true, true, false, true));
+    assert(!UseOnDemandPipelines(false, true, false, true));
+    assert(!UseOnDemandPipelines(true, false, false, true));
+    assert(!UseOnDemandPipelines(true, true, true, true));
     assert(WarmupThreadCount(1) == 1 && WarmupThreadCount(2) == 1 && WarmupThreadCount(4) == 1);
     assert(WarmupThreadCount(6) == 4 && WarmupThreadCount(8) == 6 && WarmupThreadCount(32) == 6);
 
@@ -61,6 +64,19 @@ int main() {
     assert(!PublishFirst(pipelines, 7, std::move(warm)));
     assert(*pipelines[7] == 1 && warm && *warm == 2);
     assert(PublishFirst(pipelines, 8, std::make_unique<int>(3)) && *pipelines[8] == 3);
+
+    // #149: the first out-of-memory refusal stops the bulk warm-up; other refusals do not.
+    WarmupMemoryStop stop;
+    assert(!stop.Stopped());
+    stop.Report(-3); // VK_ERROR_INITIALIZATION_FAILED: a damaged entry (#72), keep going
+    stop.Report(0);  // VK_SUCCESS
+    assert(!stop.Stopped());
+    stop.Report(-1); // VK_ERROR_OUT_OF_HOST_MEMORY
+    assert(stop.Stopped());
+    stop.Reset();
+    assert(!stop.Stopped());
+    stop.Report(-2); // VK_ERROR_OUT_OF_DEVICE_MEMORY
+    assert(stop.Stopped());
 
     std::puts("PASS: warm-up inbox");
 }

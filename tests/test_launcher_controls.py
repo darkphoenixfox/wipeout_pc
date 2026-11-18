@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import queue
@@ -71,6 +72,32 @@ class ControlMapTest(unittest.TestCase):
         self.assertEqual(launcher.INI_DEFAULTS['cheat_very_hard'], '0')
         self.assertIn('cheat_double_jumps', launcher.INI_FLAGS)
         self.assertIn('cheat_very_hard', launcher.INI_FLAGS)
+
+    def test_window_position_only_on_a_screen(self):
+        # #151: the last position is used again only while it lies on a monitor.
+        if launcher.WINDOWS:
+            self.assertTrue(launcher.on_screen(100, 100))
+            self.assertFalse(launcher.on_screen(-30000, -30000))
+        else:
+            self.assertTrue(launcher.on_screen(-30000, -30000))
+
+    def test_controller_buttons_and_stick(self):
+        # #145: the first connected pad's buttons; the left stick past a quarter reads as the D-pad.
+        def pad(raw):
+            def get_state(index, state):
+                if index != 1:
+                    return 1167  # ERROR_DEVICE_NOT_CONNECTED
+                state[4:6], state[8:10], state[10:12] = (v.to_bytes(2, 'little', signed=True) for v in raw)
+                return 0
+            return get_state
+        with mock.patch.object(launcher, '_xinput', pad((0x1000, 0, 0)), create=True):
+            self.assertEqual(launcher.xinput_buttons(), 0x1000)
+        with mock.patch.object(launcher, '_xinput', pad((0, -20000, 20000)), create=True):
+            self.assertEqual(launcher.xinput_buttons(), 0x1 | 0x4)
+        with mock.patch.object(launcher, '_xinput', pad((0x200, 20000, -20000)), create=True):
+            self.assertEqual(launcher.xinput_buttons(), 0x200 | 0x2 | 0x8)
+        with mock.patch.object(launcher, '_xinput', lambda _i, _s: 1167, create=True):
+            self.assertIsNone(launcher.xinput_buttons())
 
     def test_pipeline_binary_cache_switch(self):
         settings = {**launcher.APP_DEFAULTS}
@@ -254,10 +281,11 @@ class ControlMapTest(unittest.TestCase):
         # Off by default; on, each cheat's patch joins the launcher's selection (or is the only extra name).
         self.assertFalse(any(launcher.APP_DEFAULTS[key] for key, *_rest in launcher.CHEATS))
         env = launcher.game_environment({**launcher.APP_DEFAULTS, 'cheat_events': True, 'cheat_rank': True,
-                                         'cheat_ships': True})
-        self.assertEqual(env['GOW3_PATCHES'].split(';')[-3:],
+                                         'cheat_ships': True, 'cheat_van_uber': True, 'cheat_vr_ships': True})
+        self.assertEqual(env['GOW3_PATCHES'].split(';')[-5:],
                          ['Cheat - Unlock all HD and Fury events', 'Cheat - Top rank in 2048',
-                          'Cheat - Unlock all ships'])
+                          'Cheat - Unlock all ships', 'Cheat - Van Uber team (owned DLC)',
+                          'Cheat - VR ships outside VR'])
         env = launcher.game_environment(dict(launcher.APP_DEFAULTS))
         self.assertNotIn('Cheat - ', env.get('GOW3_PATCHES', ''))
 
@@ -293,17 +321,20 @@ class ControlMapTest(unittest.TestCase):
         for key in ('game_dir', 'user_dir', 'mods_dir', 'patches_dir', 'language', 'hdr',
                     'draw_pipe', 'readbacks', 'background_warmup', 'parallel_warmup', 'controls', 'pad_style', 'glyph_style'):
             self.assertIn(key, launcher.APP_DEFAULTS)
-        # The player name option is gone: an old settings.json value is ignored.
-        self.assertNotIn('player_name', launcher.APP_DEFAULTS)
-        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'player_name': ' Kratos '})
-        self.assertNotIn('GOW3_USER_NAME', env)
+        # WipEout's profile name (#129): trimmed, at most 16 characters; empty leaves "Player".
+        env = launcher.game_environment({**launcher.APP_DEFAULTS, 'player_name': ' Arial Tetsuo Racer '})
+        self.assertEqual(env['GOW3_USER_NAME'], 'Arial Tetsuo Rac')
+        self.assertNotIn('GOW3_USER_NAME', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
+        # Profiles (#162): the runtime keeps a profile's saves in profiles/<name>; empty = the main saves.
+        self.assertEqual(launcher.game_environment({**launcher.APP_DEFAULTS, 'profile': ' Sam '})['GOW3_PROFILE'], 'Sam')
+        self.assertNotIn('GOW3_PROFILE', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
         for key in ('display_mode', 'fps_limit', 'render_resolution', 'engine_fps'):
             self.assertIn(key, launcher.INI_DEFAULTS)
 
     def test_graphics_defaults_match_the_game(self):
         d = launcher.INI_DEFAULTS
         self.assertEqual((d['display_mode'], d['vsync'], d['fps_limit'], d['engine_fps']), ('windowed', '1', '0', '120'))
-        self.assertEqual([v for v, _t in launcher.FPS_LIMITS], ['30', '60', '100', '120', '240', '0'])
+        self.assertEqual([v for v, _t in launcher.FPS_LIMITS], ['30', '40', '60', '100', '120', '144', '165', '240', '0'])
         self.assertEqual(d['frames_queued'], '1')
         self.assertEqual([v for v, _t in launcher.FRAMES_QUEUED], ['1', '2', '0'])
         self.assertNotIn('GOW3_FRAMES_AHEAD', launcher.game_environment({**launcher.APP_DEFAULTS, 'frames_ahead': '2'}))
@@ -746,11 +777,208 @@ class MusicTest(unittest.TestCase):
         self.assertEqual(env['GOW3_MUSIC_DIR'], 'D:/Music')
 
 
+class DlssDownloadTest(unittest.TestCase):
+    """NVIDIA's runtime is downloaded on request and kept only when its SHA-256 matches."""
+
+    def opener(self, data):
+        import io
+
+        class Response(io.BytesIO):
+            headers = {'Content-Length': str(len(data))}
+        return lambda request, timeout: Response(data)
+
+    def test_the_file_is_kept_when_it_matches(self):
+        import hashlib
+        import tempfile
+        data = b'nvngx' * 1000
+        with tempfile.TemporaryDirectory() as folder:
+            seen = []
+            target = launcher.download_dlss_runtime(folder, lambda done, total: seen.append((done, total)),
+                                                    sha256=hashlib.sha256(data).hexdigest(),
+                                                    opener=self.opener(data))
+            self.assertEqual(target.read_bytes(), data)
+            self.assertEqual(seen[-1], (len(data), len(data)))
+            self.assertEqual(sorted(p.name for p in Path(folder).iterdir()), ['nvngx_dlss.dll'])
+
+    def test_a_different_file_is_refused_and_nothing_stays(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError):
+                launcher.download_dlss_runtime(folder, sha256='0' * 64, opener=self.opener(b'not nvidia'))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_the_pinned_file_is_nvidias(self):
+        self.assertTrue(launcher.DLSS_RUNTIME_URL.startswith('https://raw.githubusercontent.com/NVIDIA/DLSS/v'))
+        self.assertIn(launcher.DLSS_SDK_VERSION, launcher.DLSS_RUNTIME_URL)
+        self.assertEqual(len(launcher.DLSS_RUNTIME_SHA256), 64)
+
+    def test_the_release_builds_the_bridge_from_the_same_sdk(self):
+        # gow3_dlss.dll and the downloaded nvngx_dlss.dll come from the same NVIDIA SDK release.
+        workflow = (ROOT / '.github/workflows/windows-zip.yml').read_text(encoding='utf-8')
+        self.assertIn(f'--branch v{launcher.DLSS_SDK_VERSION} ', workflow)
+        self.assertIn('DLSS_REQUIRED=1', workflow)
+
+    def test_rtx_cards_are_recognized(self):
+        self.assertIs(launcher.rtx_gpu([('0', 'NVIDIA GeForce RTX 4070 Laptop GPU', 'DiscreteGpu')]), True)
+        self.assertIs(launcher.rtx_gpu([('0', 'Quadro RTX 4000', 'DiscreteGpu')]), True)
+        self.assertIs(launcher.rtx_gpu([('0', 'AMD Radeon RX 9070 XT', 'DiscreteGpu'),
+                                        ('1', 'NVIDIA GeForce GTX 1660', 'DiscreteGpu')]), False)
+        self.assertIsNone(launcher.rtx_gpu([]))
+
+
+class QuietStreamTest(unittest.TestCase):
+    def test_a_closed_output_pipe_does_not_stop_the_start(self):
+        class ClosedPipe:
+            def write(self, text):
+                raise OSError(22, 'Invalid argument')
+
+            def flush(self):
+                raise OSError(22, 'Invalid argument')
+
+            def fileno(self):
+                return 7
+        stream = launcher.QuietStream(ClosedPipe())
+        print('Game and update combined from E:/update', file=stream, flush=True)
+        self.assertEqual(stream.fileno(), 7)
+
+
+class TextureQualityTest(unittest.TestCase):
+    def test_texture_limit_reaches_the_game_only_when_lowered(self):
+        # #72, #16: Low and Medium cap the largest textures; Full (default) sets nothing.
+        self.assertEqual([v for v, _t in launcher.TEXTURE_LIMITS], ['', '4096', '2048'])
+        with mock.patch.dict(os.environ, {'GOW3_TEXTURE_LIMIT': '1024'}):
+            self.assertNotIn('GOW3_TEXTURE_LIMIT', launcher.game_environment(dict(launcher.APP_DEFAULTS)))
+            low = launcher.game_environment({**launcher.APP_DEFAULTS, 'texture_limit': '2048'})
+        self.assertEqual(low['GOW3_TEXTURE_LIMIT'], '2048')
+
+
+class PortableTest(unittest.TestCase):
+    def test_a_settings_file_next_to_the_launcher_keeps_its_options_there(self):
+        # #203: settings.json next to WipEout.exe keeps the launcher's options in that folder.
+        import importlib
+        with tempfile.TemporaryDirectory() as folder:
+            try:
+                with mock.patch.dict(os.environ, {'GOW3_DATA_DIR': folder}):
+                    importlib.reload(launcher)
+                    self.assertNotEqual(launcher.CONFIG_FILE.parent, Path(folder))
+                    (Path(folder) / 'settings.json').write_text('', encoding='utf-8')  # empty: defaults
+                    importlib.reload(launcher)
+                    self.assertEqual(launcher.CONFIG_FILE, Path(folder) / 'settings.json')
+                    self.assertEqual(launcher.load_json(launcher.CONFIG_FILE, {}), {})
+            finally:
+                importlib.reload(launcher)
+
+
+class LauncherGamepadSwitchTest(unittest.TestCase):
+    def test_the_switch_off_ignores_the_controller(self):
+        # #179: players who move the mouse with the stick turn the launcher's controller off.
+        for on, calls in ((True, 1), (False, 0)):
+            app = types.SimpleNamespace(var=lambda key, store, on=on: types.SimpleNamespace(get=lambda: on),
+                                        root=mock.Mock(), gamepad_action=mock.Mock(), poll_gamepad=None,
+                                        in_front=lambda: True)
+            app.root.wm_frame.return_value = '0x10'
+            with mock.patch.object(launcher, 'xinput_buttons', return_value=0x1000), \
+                    mock.patch.object(launcher, 'ctypes', create=True) as fake_ctypes:
+                fake_ctypes.windll.user32.GetForegroundWindow.return_value = 0x10
+                launcher.Launcher.poll_gamepad(app)
+            self.assertEqual(app.gamepad_action.call_count, calls)
+
+
+class TrickButtonTest(unittest.TestCase):
+    def test_the_trick_button_has_no_pad_default_and_binds_on_both_tables(self):
+        # #207: V on the keyboard (the game's own key: nothing sent), no gamepad button until chosen.
+        self.assertNotIn('trick', launcher.keyboard_map({'key': {}}))
+        self.assertEqual(launcher.control_map({'pad': {}}, 'pad'), '')
+        self.assertEqual(launcher.control_map({'pad': {'trick': 'y'}}, 'pad'), 'trick=y')
+        self.assertIn('trick=B', launcher.keyboard_map({'key': {'trick': 'B'}}))
+
+    def test_the_gamepad_icon_of_an_unbound_trick_button_is_empty(self):
+        # The launcher crashed at start (KeyError 'trick') drawing an icon for a button without a default.
+        icon = mock.Mock()
+        app = types.SimpleNamespace(control_vars={'pad': {'trick': types.SimpleNamespace(get=lambda: '')}},
+                                    pad_icons={'trick': icon}, pad_style=types.SimpleNamespace(get=lambda: 'xbox'),
+                                    px=lambda v: v)
+        launcher.Launcher.draw_pad_icon(app, 'trick')
+        icon.delete.assert_called_once_with('all')
+
+
+class MenuFpsCapTest(unittest.TestCase):
+    def test_the_menu_cap_switch_off_lifts_the_60_fps_menus(self):
+        # #177: off sets GOW3_MENU_FPS=0 over the profile's 60; on leaves the profile (or the player's variable).
+        base = dict(launcher.APP_DEFAULTS, game_dir='')
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('GOW3_MENU_FPS', None)
+            self.assertNotIn('GOW3_MENU_FPS', launcher.game_environment(base))
+            self.assertEqual(launcher.game_environment(dict(base, menu_fps_cap=False))['GOW3_MENU_FPS'], '0')
+            self.assertNotIn('GOW3_PHOTO_FLARE', launcher.game_environment(base))
+            self.assertEqual(launcher.game_environment(dict(base, photo_flare=False))['GOW3_PHOTO_FLARE'], '0')
+            os.environ.pop('GOW3_CUBE_BUDGET', None)
+            self.assertNotIn('GOW3_CUBE_BUDGET', launcher.game_environment(base))
+            self.assertEqual(launcher.game_environment(dict(base, adaptive_reflections=False))['GOW3_CUBE_BUDGET'], 'off')
+
+
+class LinuxLauncherTest(unittest.TestCase):
+    def test_joystick_events_give_the_launcher_buttons(self):
+        # Knack #28: /dev/input/js* events (time, value, type, number), keys by kernel code.
+        pad = launcher.LinuxPad()
+        pad.keys, pad.axes = (0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x13a, 0x13b), (0x00, 0x01, 0x10, 0x11)
+        event = lambda value, kind, number: struct.pack('<IhBB', 0, value, kind, number)
+        pad.feed(event(0, 0x81, 0) + event(0, 0x82, 1))  # the starting state: nothing held
+        self.assertEqual(pad.buttons(), 0)
+        pad.feed(event(1, 1, 0) + event(-32767, 2, 1) + event(1, 1, 7))  # A, stick up, Start
+        self.assertEqual(pad.buttons(), 0x1000 | 0x1 | 0x10)
+        pad.feed(event(0, 1, 0) + event(0, 2, 1) + event(32767, 2, 2))  # released; hat right
+        self.assertEqual(pad.buttons(), 0x10 | 0x8)
+
+    def test_linux_offers_the_appimage_and_swaps_it_in(self):
+        import io
+        release = {'tag_name': 'windows-v9.9.9', 'html_url': 'p', 'body': '', 'assets': [
+            {'name': 'wipeout-windows.zip', 'browser_download_url': 'z'},
+            {'name': 'wipeout-x86_64.AppImage', 'browser_download_url': 'a'}]}
+        response = lambda *_a, **_k: io.BytesIO(json.dumps(release).encode())
+        for windows, url in ((True, 'z'), (False, 'a')):
+            with mock.patch.object(launcher, 'WINDOWS', windows),                     mock.patch.object(launcher.urllib.request, 'urlopen', response):
+                self.assertEqual(launcher.latest_release()[1], url)
+        with tempfile.TemporaryDirectory() as folder:
+            running, new = Path(folder) / 'w.AppImage', Path(folder) / 'w.AppImage.part'
+            running.write_bytes(b'old')
+            new.write_bytes(b'new')
+            with mock.patch.object(launcher.subprocess, 'Popen') as started:
+                launcher.install_appimage(new, running)
+            self.assertEqual(running.read_bytes(), b'new')
+            self.assertFalse(new.exists())
+            self.assertEqual(started.call_args[0][0], [str(running)])
+
+
+class UpdateDownloadTest(unittest.TestCase):
+    def test_a_cut_download_is_an_error_and_a_whole_zip_is_kept(self):
+        # #191: the connection ended early and the launcher said "File is not a zip file".
+        import io
+        import zipfile
+        whole = io.BytesIO()
+        with zipfile.ZipFile(whole, 'w') as package:
+            package.writestr('WipEout.exe', b'x' * 5000)
+        data = whole.getvalue()
+
+        def opener(body, length):
+            response = io.BytesIO(body)
+            response.headers = {'Content-Length': str(length)}
+            return lambda request, timeout: response
+        with tempfile.TemporaryDirectory() as folder:
+            archive = Path(folder) / 'update.zip'
+            with self.assertRaises(OSError):
+                launcher.download_update('https://example.invalid/w.zip', archive, opener=opener(data[:100], len(data)))
+            with self.assertRaises(OSError):  # no length from the server and not a zip
+                launcher.download_update('https://example.invalid/w.zip', archive, opener=opener(b'<html>', 0))
+            launcher.download_update('https://example.invalid/w.zip', archive, opener=opener(data, len(data)))
+            self.assertTrue(zipfile.is_zipfile(archive))
+
+
 class ReleaseVersionTest(unittest.TestCase):
     def test_first_wipeout_release(self):
-        self.assertEqual(launcher.VERSION, '0.2.20')
-        self.assertGreater(launcher.version_tuple('windows-v0.2.21'), launcher.version_tuple(launcher.VERSION))
-        self.assertGreater(launcher.version_tuple(launcher.VERSION), launcher.version_tuple('windows-v0.2.19'))
+        self.assertEqual(launcher.VERSION, '0.2.76')
+        self.assertGreater(launcher.version_tuple('windows-v0.2.77'), launcher.version_tuple(launcher.VERSION))
+        self.assertGreater(launcher.version_tuple(launcher.VERSION), launcher.version_tuple('windows-v0.2.55'))
 
     def test_update_check_is_on_by_default(self):
         # A new key: the old 'check_updates' was saved off in everyone's settings.
@@ -773,6 +1001,16 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertEqual(app.ui_calls.qsize(), offered)
             while not app.ui_calls.empty():
                 app.ui_calls.get()
+
+    def test_update_without_its_zip_asks_again(self):
+        # A release offered before its zip was built: UPDATE NOW asks GitHub again and says to
+        # wait, instead of opening the release page (#61).
+        app = types.SimpleNamespace(process=None, messagebox=mock.Mock(), update_progress=mock.Mock())
+        with mock.patch.object(launcher, 'FROZEN', True), mock.patch.object(launcher, 'open_url') as opened,                 mock.patch.object(launcher, 'latest_release', return_value=('9.9.9', None, 'p', '')):
+            launcher.Launcher.install_update(app, '9.9.9', None, 'p')
+        opened.assert_not_called()
+        app.messagebox.showinfo.assert_called_once()
+        app.update_progress.assert_not_called()
 
     def test_whats_new_is_cut_from_the_release_note(self):
         body = "## What's new\n\n**Pop-up.** Click `UPDATE NOW`.\n- one\n\n## All features\n\n- everything\n"

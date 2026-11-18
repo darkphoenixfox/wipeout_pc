@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include "runtime_online.h"
 #include "runtime.h"
 #include "cpu_check.h"
 #include "isa_rewrite.h"
@@ -24,6 +25,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
+#include <psapi.h>
+#include <intrin.h>
 #else
 #include <sys/mman.h>
 #include <malloc.h>
@@ -44,6 +47,19 @@ static uint64_t import_count;
 static unsigned char *image;
 static uint64_t image_size;
 unsigned char *runtime_image_base(void) { return image; }
+uint64_t runtime_image_size(void) { return image_size; }
+/* WipEout (#118): the byte the game sets while a race is paused, in the pause menu and in photo
+ * mode (0x1012712; photo mode does nothing unless it is 1). Only when the game's store of it at
+ * 0x416300 is where expected, so another build reads 0. */
+int runtime_wipeout_paused(void) {
+    static const unsigned char store[]={0xc6,0x05,0x0b,0xc4,0xbf,0x00,0x01}; /* movb $1, 0x1012712 */
+    static int known=-1;
+    if (known<0) {
+        if (!image) return 0;
+        known=image_size>0x1012712 && !memcmp(image+0x416300,store,sizeof(store));
+    }
+    return known && ((volatile unsigned char *)image)[0x1012712]==1;
+}
 static size_t page_size;
 typedef struct { uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, tls_module; } LinkedModule;
 static LinkedModule modules[16];
@@ -138,10 +154,8 @@ static void describe_address(char *out, size_t size, uintptr_t address) {
  * pointers, so the stack is scanned instead of walked.
  * ponytail: stack scan can list stale return addresses; use a debugger for exact frames. */
 static unsigned watchdog_seconds;
-static DWORD WINAPI watchdog_thread(LPVOID unused) {
-    (void)unused;
-    Sleep(watchdog_seconds*1000u);
-    fputs("STOP: watchdog timeout; thread stacks:\n",stderr);
+/* Every other thread's position and the guest return addresses on its stack (resumed after). */
+static void dump_threads(void) {
     HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0);
     THREADENTRY32 entry={.dwSize=sizeof(entry)};
     const DWORD pid=GetCurrentProcessId(), self=GetCurrentThreadId();
@@ -150,13 +164,19 @@ static DWORD WINAPI watchdog_thread(LPVOID unused) {
         HANDLE thread=OpenThread(THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT,FALSE,entry.th32ThreadID);
         if (!thread) continue;
         CONTEXT c={.ContextFlags=CONTEXT_CONTROL|CONTEXT_INTEGER};
-        if (SuspendThread(thread)!=(DWORD)-1 && GetThreadContext(thread,&c)) {
+        static uintptr_t stack[4096];
+        SIZE_T got=0;
+        BOOL have=FALSE;
+        /* Only system calls while it is stopped: it may hold the heap, loader or stdio lock. */
+        if (SuspendThread(thread)!=(DWORD)-1) {
+            if ((have=GetThreadContext(thread,&c)))
+                ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)c.Rsp,stack,sizeof(stack),&got);
+            ResumeThread(thread);
+        }
+        if (have) {
             char where[MAX_PATH+96];
             describe_address(where,sizeof(where),(uintptr_t)c.Rip);
             fprintf(stderr,"thread %lu at %s rdi=0x%llx\n",entry.th32ThreadID,where,(unsigned long long)c.Rdi);
-            uintptr_t stack[4096];
-            SIZE_T got=0;
-            ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)c.Rsp,stack,sizeof(stack),&got);
             for (size_t i=0, shown=0; i<got/sizeof(*stack) && shown<10; ++i)
                 if (stack[i]-(uintptr_t)image<image_size) {
                     fprintf(stderr,"  guest return 0x%" PRIxPTR "\n",stack[i]-(uintptr_t)image); ++shown;
@@ -166,7 +186,23 @@ static DWORD WINAPI watchdog_thread(LPVOID unused) {
     }
     CloseHandle(snap);
     fflush(stderr);
+}
+static DWORD WINAPI watchdog_thread(LPVOID unused) {
+    (void)unused;
+    Sleep(watchdog_seconds*1000u);
+    fputs("STOP: watchdog timeout; thread stacks:\n",stderr);
+    dump_threads();
     _exit(124);
+}
+/* #113: a start that never opens the pad (black screen) puts the thread stacks in the log once,
+ * for the bug report; the game goes on. */
+static DWORD WINAPI start_watch_thread(LPVOID unused) {
+    (void)unused;
+    Sleep(90000);
+    if (runtime_pad_opened) return 0;
+    fputs("Start: no pad opened after 90 s (black screen?); thread stacks for the bug report:\n",stderr);
+    dump_threads();
+    return 0;
 }
 /* GOW3_PROFILE=1: sample every thread's instruction pointer every 5 ms and print the hottest
  * addresses of each 5-second window (guest offsets, or host module+offset).
@@ -228,6 +264,186 @@ static DWORD WINAPI profiler_thread(LPVOID unused) {
         fflush(stderr);
     }
 }
+/* GOW3_CPU_PROFILE=1: what the overlay's CPU time is spent on. Every millisecond, each of its
+ * two threads (the game thread that flips frames, the GPU command thread) that has used CPU
+ * since the last look is stopped and its position and caller chain (16 deep)
+ * recorded; the draw recording thread the GPU command thread hands draws to, and the Vulkan
+ * recording thread after it, are sampled too.
+ * Every second: each thread's CPU ms per frame, then its hottest positions ("self")
+ * and the callers most often on its stack ("in"), as guest offsets or gow3-probe.exe+offset.
+ * ponytail: a thread that ran and then blocked inside the millisecond is caught waiting
+ * (ntdll); those samples are counted under "waiting" and left out of the lists. */
+enum { CPU_PROFILE_SLOTS=4096, CPU_PROFILE_DEPTH=16, CPU_PROFILE_TOP=16 };
+typedef struct { uintptr_t key; uint32_t count; } CpuProfileSlot;
+typedef struct {
+    const char *name;
+    DWORD id;
+    HANDLE handle;
+    ULONG64 last_cycles, window_cycles;
+    uint32_t samples, waiting;
+    CpuProfileSlot self[CPU_PROFILE_SLOTS], in[CPU_PROFILE_SLOTS];
+} CpuProfileThread;
+static void cpu_profile_count(CpuProfileSlot *table, uintptr_t key) {
+    size_t h=(key>>4)%CPU_PROFILE_SLOTS;
+    for (size_t probe=0; probe<CPU_PROFILE_SLOTS; ++probe, h=(h+1)%CPU_PROFILE_SLOTS) {
+        if (!table[h].count) { table[h].key=key; table[h].count=1; return; }
+        if (table[h].key==key) { ++table[h].count; return; }
+    }
+}
+static void cpu_profile_print(const char *title, CpuProfileSlot *table, uint32_t samples) {
+    fprintf(stderr,"    %s:\n",title);
+    for (int n=0;n<CPU_PROFILE_TOP;++n) {
+        size_t best=CPU_PROFILE_SLOTS;
+        for (size_t i=0;i<CPU_PROFILE_SLOTS;++i)
+            if (table[i].count && (best==CPU_PROFILE_SLOTS || table[i].count>table[best].count)) best=i;
+        if (best==CPU_PROFILE_SLOTS) break;
+        char where[MAX_PATH+96];
+        describe_address(where,sizeof(where),table[best].key);
+        fprintf(stderr,"      %5.1f%%  %s\n",100.0*table[best].count/(samples ? samples : 1),where);
+        table[best].count=0;
+    }
+}
+static int cpu_profile_waiting(uintptr_t rip) {
+    static uintptr_t ntdll, ntdll_end, win32u, win32u_end;
+    if (!ntdll) {
+        MODULEINFO info;
+        HMODULE m=GetModuleHandleA("ntdll.dll");
+        if (m && K32GetModuleInformation(GetCurrentProcess(),m,&info,sizeof(info))) { ntdll=(uintptr_t)m; ntdll_end=ntdll+info.SizeOfImage; }
+        m=GetModuleHandleA("win32u.dll");
+        if (m && K32GetModuleInformation(GetCurrentProcess(),m,&info,sizeof(info))) { win32u=(uintptr_t)m; win32u_end=win32u+info.SizeOfImage; }
+    }
+    return (rip>=ntdll && rip<ntdll_end) || (rip>=win32u && rip<win32u_end);
+}
+/* The sampled thread's stack from rsp, copied while it was stopped; the caller chain is
+ * unwound from this copy after the thread runs again, so the profiler never calls the
+ * unwinder (and its locks) while a thread that may hold them is suspended. Host frames are
+ * unwound with their unwind tables (Win64 code keeps no walkable rbp chain), guest frames by
+ * their rbp chain; stack addresses in rbp are moved into the copy at each step. */
+static unsigned char cpu_profile_stack[16384] __attribute__((aligned(16)));
+static int cpu_profile_walk(const CONTEXT *thread, size_t got, uintptr_t *chain) {
+    if (got<16) return 0;
+    const uintptr_t real=(uintptr_t)thread->Rsp, copy=(uintptr_t)cpu_profile_stack;
+    CONTEXT c=*thread;
+    c.Rsp=copy;
+    if (c.Rbp>=real && c.Rbp<real+got) c.Rbp=c.Rbp-real+copy;
+    int depth=0;
+    for (int step=0; step<2*CPU_PROFILE_DEPTH && depth<CPU_PROFILE_DEPTH; ++step) {
+        if (c.Rsp<copy || c.Rsp+16>copy+got) break;
+        const uintptr_t rip=(uintptr_t)c.Rip;
+        if (image && rip-(uintptr_t)image<image_size) {
+            const uintptr_t fp=(uintptr_t)c.Rbp;
+            if (fp<copy || fp+16>copy+got) break;
+            const uintptr_t *frame=(const uintptr_t *)fp;
+            c.Rip=frame[1];
+            c.Rsp=fp+16;
+            c.Rbp=frame[0];
+        } else {
+            DWORD64 base=0;
+            PRUNTIME_FUNCTION entry=RtlLookupFunctionEntry(rip,&base,NULL);
+            if (entry) {
+                PVOID handler_data=NULL;
+                DWORD64 establisher=0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER,base,rip,entry,&c,&handler_data,&establisher,NULL);
+            } else {
+                c.Rip=*(const DWORD64 *)(uintptr_t)c.Rsp; /* leaf: return address on top */
+                c.Rsp+=8;
+            }
+        }
+        if (c.Rbp>=real && c.Rbp<real+got) c.Rbp=c.Rbp-real+copy;
+        if (!c.Rip) break;
+        chain[depth++]=(uintptr_t)c.Rip;
+    }
+    return depth;
+}
+static DWORD WINAPI cpu_profiler_thread(LPVOID unused) {
+    (void)unused;
+    enum { THREADS=4 };
+    static CpuProfileThread threads[THREADS]={{.name="game thread"},{.name="GPU command thread"},
+                                              {.name="draw recording thread"},{.name="Vulkan recording thread"}};
+    LARGE_INTEGER frequency, start, now;
+    QueryPerformanceFrequency(&frequency);
+    fputs("CPU profile: on (GOW3_CPU_PROFILE), a report every second\n",stderr);
+    for (unsigned window=1;;++window) {
+        unsigned long ids[THREADS]={0,0,0,0};
+        uint64_t frames_start=0, frames_end=0, drain_start=0, drain_end=0;
+        gow3gpu_frame_threads(&ids[0],&ids[1],&frames_start);
+        gow3gpu_draw_rec_thread(&ids[2],&drain_start,&ids[3]);
+        uint64_t counts_start[3], counts_end[3];
+        gow3gpu_draw_counts(&counts_start[0],&counts_start[1],&counts_start[2]);
+        const uint64_t tsc_start=__rdtsc();
+        QueryPerformanceCounter(&start);
+        for (int t=0;t<THREADS;++t) {
+            CpuProfileThread *th=&threads[t];
+            if (th->id!=ids[t]) {
+                if (th->handle) CloseHandle(th->handle);
+                th->handle=ids[t] ? OpenThread(THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT|THREAD_QUERY_INFORMATION,FALSE,ids[t]) : NULL;
+                th->id=ids[t];
+                th->last_cycles=0;
+                if (th->handle) QueryThreadCycleTime(th->handle,&th->last_cycles);
+            }
+            th->window_cycles=0;
+            th->samples=th->waiting=0;
+            memset(th->self,0,sizeof(th->self));
+            memset(th->in,0,sizeof(th->in));
+        }
+        do {
+            compat_sleep_ns(1000000);
+            for (int t=0;t<THREADS;++t) {
+                CpuProfileThread *th=&threads[t];
+                ULONG64 cycles=0;
+                if (!th->handle || !QueryThreadCycleTime(th->handle,&cycles) || cycles==th->last_cycles) continue;
+                th->window_cycles+=cycles-th->last_cycles;
+                th->last_cycles=cycles;
+                CONTEXT c={.ContextFlags=CONTEXT_CONTROL|CONTEXT_INTEGER};
+                if (SuspendThread(th->handle)==(DWORD)-1) continue;
+                const int have_context=GetThreadContext(th->handle,&c);
+                size_t stack_got=0;
+                if (have_context && !cpu_profile_waiting((uintptr_t)c.Rip)) {
+                    for (size_t want=sizeof(cpu_profile_stack); want>=4096 && !stack_got; want/=2) {
+                        SIZE_T got=0;
+                        if (ReadProcessMemory(GetCurrentProcess(),(void *)(uintptr_t)c.Rsp,cpu_profile_stack,want,&got)) stack_got=got;
+                    }
+                }
+                ResumeThread(th->handle);
+                if (!have_context) continue;
+                if (cpu_profile_waiting((uintptr_t)c.Rip)) { ++th->waiting; continue; }
+                ++th->samples;
+                cpu_profile_count(th->self,(uintptr_t)c.Rip & ~(uintptr_t)15);
+                uintptr_t chain[CPU_PROFILE_DEPTH];
+                const int depth=cpu_profile_walk(&c,stack_got,chain);
+                for (int i=0;i<depth;++i) {
+                    int seen=0;
+                    for (int j=0;j<i;++j) seen|=chain[j]==chain[i];
+                    if (!seen) cpu_profile_count(th->in,chain[i]);
+                }
+            }
+            QueryPerformanceCounter(&now);
+        } while (now.QuadPart-start.QuadPart<frequency.QuadPart);
+        gow3gpu_frame_threads(&ids[0],&ids[1],&frames_end);
+        gow3gpu_draw_rec_thread(&ids[2],&drain_end,&ids[3]);
+        gow3gpu_draw_counts(&counts_end[0],&counts_end[1],&counts_end[2]);
+        const uint64_t frames=frames_end-frames_start, tsc=__rdtsc()-tsc_start;
+        const double wall_ms=1000.0*(double)(now.QuadPart-start.QuadPart)/(double)frequency.QuadPart;
+        const double drain_ms=tsc ? (double)(drain_end-drain_start)*wall_ms/(double)tsc : 0.0;
+        fprintf(stderr,"CPU profile %u: %" PRIu64 " frames; the GPU command thread waited %.2f ms per frame for the draw recording thread\n",
+                window,frames,frames ? drain_ms/(double)frames : 0.0);
+        if (frames)
+            fprintf(stderr,"  per frame: %.0f draws, %.0f dispatches, %.1f submissions\n",
+                    (double)(counts_end[0]-counts_start[0])/(double)frames,(double)(counts_end[1]-counts_start[1])/(double)frames,
+                    (double)(counts_end[2]-counts_start[2])/(double)frames);
+        for (int t=0;t<THREADS;++t) {
+            CpuProfileThread *th=&threads[t];
+            if (!th->handle) { fprintf(stderr,"  %s: not known yet\n",th->name); continue; }
+            const double ms=tsc ? (double)th->window_cycles*wall_ms/(double)tsc : 0.0;
+            fprintf(stderr,"  %s %lu: %.2f ms per frame (%.0f ms in the second), %u samples, %u caught waiting\n",
+                    th->name,th->id,frames ? ms/(double)frames : 0.0,ms,th->samples,th->waiting);
+            if (!th->samples) continue;
+            cpu_profile_print("self",th->self,th->samples);
+            cpu_profile_print("in",th->in,th->samples);
+        }
+        fflush(stderr);
+    }
+}
 /* exit() while the game runs: who called it (other exit handlers may crash before they print). */
 static void report_exit_caller(void) {
     void *frames[24];
@@ -265,6 +481,28 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
         describe_address(where,sizeof(where),frame[1]);
         fprintf(stderr,"  #%d %s\n",depth,where);
         rbp=frame[0];
+    }
+    /* A fault in host code without frame pointers (a graphics driver, #100): the Windows unwind
+     * data walks it back to the port's call; it stops at guest code, which has none. */
+    if (RtlLookupFunctionEntry(c->Rip,&(DWORD64){0},NULL)) {
+        typedef HRESULT (WINAPI *Describe)(HANDLE,PWSTR *);
+        const Describe describe=(Describe)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),"GetThreadDescription");
+        PWSTR name=NULL;
+        if (describe && SUCCEEDED(describe(GetCurrentThread(),&name)) && name && *name)
+            fprintf(stderr,"  thread '%ls', unwound:\n",name);
+        else
+            fprintf(stderr,"  unwound:\n");
+        if (name) LocalFree(name);
+        CONTEXT u=*c;
+        for (int depth=0; depth<24 && u.Rip; ++depth) {
+            DWORD64 base=0, frame=0;
+            PRUNTIME_FUNCTION f=RtlLookupFunctionEntry(u.Rip,&base,NULL);
+            describe_address(where,sizeof(where),(uintptr_t)u.Rip);
+            fprintf(stderr,"  ~%d %s\n",depth,where);
+            if (!f) break;
+            PVOID handler_data=NULL;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER,base,u.Rip,f,&u,&handler_data,&frame,NULL);
+        }
     }
     if (isa_table) isa_rewrite_report(isa_table,stderr);
     fflush(NULL);
@@ -658,6 +896,106 @@ static int install_jump(uint64_t at, unsigned length, unsigned char *stub) {
     return 1;
 }
 
+/* WipEout (01.07 eboot) load diagnostics. 0x7dd210 is the game's error report of its resource
+ * loader (printf-like: object, code, format, ...), silent in this build: "Not enough main
+ * memory to load Live::Rcs::Model", "Cannot resolve the path for the resource", ... (#112).
+ * 0x62692a is where the model slot function 0x6265a0 found its model not loaded (resource state
+ * +8 & 0x0f000000 not 5); unless the state changed meanwhile it then returns -1, and the model
+ * is not drawn: an invisible ship in ship select. Both print to the log. */
+static unsigned wipeout_log_lines;
+static ABI void wipeout_game_error(void *object, int code, const char *format, uint64_t a1, uint64_t a2, uint64_t a3) {
+    (void)object;
+    if (!format || wipeout_log_lines >= 200) return;
+    ++wipeout_log_lines;
+    const uint64_t args[3] = {a1, a2, a3};
+    char text[512];
+    size_t n = 0, next = 0;
+    for (const char *p = format; *p && n < sizeof(text) - 64; ++p) {
+        if (*p != '%') { text[n++] = *p == '\n' ? ' ' : *p; continue; }
+        while (p[1] && strchr("-+ #0123456789.lhz", p[1])) ++p; /* flags, width, length */
+        const char spec = *++p;
+        if (!spec) break;
+        const uint64_t value = next < 3 ? args[next] : 0;
+        if (spec == '%') { text[n++] = '%'; continue; }
+        if (next++ >= 3) { n += (size_t)snprintf(text + n, sizeof(text) - n, "?"); continue; }
+        if (spec == 's') n += (size_t)snprintf(text + n, sizeof(text) - n, "%.200s", value ? (const char *)(uintptr_t)value : "(null)");
+        else if (spec == 'd' || spec == 'i') n += (size_t)snprintf(text + n, sizeof(text) - n, "%d", (int)value);
+        else if (spec == 'u') n += (size_t)snprintf(text + n, sizeof(text) - n, "%u", (unsigned)value);
+        else if (spec == 'x' || spec == 'p') n += (size_t)snprintf(text + n, sizeof(text) - n, "%#llx", (unsigned long long)value);
+        else n += (size_t)snprintf(text + n, sizeof(text) - n, "?");
+    }
+    text[n < sizeof(text) ? n : sizeof(text) - 1] = 0;
+    static char last[512]; /* a texture that fails is asked for again and again: once is enough */
+    if (!strcmp(text, last)) { --wipeout_log_lines; return; }
+    memcpy(last, text, sizeof(last));
+    printf("Game error %d: %s\n", code, text);
+}
+static ABI void wipeout_model_not_loaded(const char *name, uint64_t resource) {
+    if (wipeout_log_lines >= 200) return;
+    ++wipeout_log_lines;
+    const uint32_t state = resource ? *(volatile uint32_t *)(uintptr_t)(resource + 8) : 0;
+    printf("Model not loaded: %.200s (resource %s, state %u, flags %#x)\n", name ? name : "(null)",
+           resource ? "found" : "none", (state >> 24) & 0xf, state);
+}
+/* 14-byte absolute jump (no register used), from a stub back to the game's code. */
+static unsigned char *put_jump(unsigned char *at, uintptr_t target) {
+    static const unsigned char jmp[6] = {0xff, 0x25, 0, 0, 0, 0};
+    memcpy(at, jmp, 6);
+    memcpy(at + 6, &target, 8);
+    return at + 14;
+}
+static void install_wipeout_logs(Segment *segments, uint64_t count, int which) {
+    /* Only whole instructions that no branch targets are replaced: 0x6271d8 and 0x627718 jump to
+     * 0x626933, the slot site's second instruction (taking it too crashed the game at the start). */
+    enum { REPORT = 0x7dd210, REPORT_LENGTH = 11, SLOT = 0x62692a, SLOT_LENGTH = 9 };
+    static const unsigned char report_original[REPORT_LENGTH] = {
+        0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x54, 0x53}; /* push rbp .. push rbx */
+    static const unsigned char slot_original[SLOT_LENGTH] = {
+        0x41, 0xc6, 0x84, 0x1c, 0x06, 0x03, 0x00, 0x00, 0x00}; /* mov byte [r12+rbx+306h],0 */
+    if (!mapped(segments, count, REPORT, REPORT_LENGTH) || !mapped(segments, count, SLOT, SLOT_LENGTH) ||
+        memcmp(image + REPORT, report_original, REPORT_LENGTH) || memcmp(image + SLOT, slot_original, SLOT_LENGTH))
+        return; /* another eboot.bin: no load diagnostics */
+    unsigned char *stubs = allocate(page_size), *p = stubs;
+    static const unsigned char save[] = {0x57, 0x56, 0x52, 0x51, 0x41, 0x50, 0x41, 0x51, 0x50, 0x41, 0x52, 0x41, 0x53};
+    static const unsigned char restore[] = {0x41, 0x5b, 0x41, 0x5a, 0x58, 0x41, 0x59, 0x41, 0x58, 0x59, 0x5a, 0x5e, 0x5f};
+    /* Report, at the function's entry (rsp = 8 mod 16): the argument registers and xmm0-7 (its
+     * vararg floats) kept around the helper, which gets the same arguments. */
+    memcpy(p, save, sizeof(save)); p += sizeof(save);
+    static const unsigned char sub128[] = {0x48, 0x81, 0xec, 0x80, 0, 0, 0}, add128[] = {0x48, 0x81, 0xc4, 0x80, 0, 0, 0};
+    memcpy(p, sub128, 7); p += 7;
+    for (int x = 0; x < 8; ++x) { const unsigned char mov[6] = {0xf3, 0x0f, 0x7f, (unsigned char)(0x44 | x << 3), 0x24, (unsigned char)(x * 16)}; memcpy(p, mov, 6); p += 6; }
+    const uintptr_t report_helper = (uintptr_t)wipeout_game_error;
+    *p++ = 0x48; *p++ = 0xb8; memcpy(p, &report_helper, 8); p += 8; *p++ = 0xff; *p++ = 0xd0; /* mov rax,helper; call rax */
+    for (int x = 0; x < 8; ++x) { const unsigned char mov[6] = {0xf3, 0x0f, 0x6f, (unsigned char)(0x44 | x << 3), 0x24, (unsigned char)(x * 16)}; memcpy(p, mov, 6); p += 6; }
+    memcpy(p, add128, 7); p += 7;
+    memcpy(p, restore, sizeof(restore)); p += sizeof(restore);
+    memcpy(p, report_original, REPORT_LENGTH); p += REPORT_LENGTH;
+    p = put_jump(p, (uintptr_t)(image + REPORT + REPORT_LENGTH));
+    unsigned char *slot_stub = p;
+    /* Slot, in 0x6265a0's body (rsp = 0 mod 16, no vector state live): name [rbp-410h] and the
+     * entry's resource [r12+rbx+118h] to the helper, then the replaced instruction. */
+    static const unsigned char args[] = {0x48, 0x83, 0xec, 0x08,                    /* sub rsp,8 */
+                                         0x48, 0x8b, 0xbd, 0xf0, 0xfb, 0xff, 0xff,  /* mov rdi,[rbp-410h] */
+                                         0x49, 0x8b, 0xb4, 0x1c, 0x18, 0x01, 0, 0}; /* mov rsi,[r12+rbx+118h] */
+    memcpy(p, save, sizeof(save)); p += sizeof(save);
+    memcpy(p, args, sizeof(args)); p += sizeof(args);
+    const uintptr_t slot_helper = (uintptr_t)wipeout_model_not_loaded;
+    *p++ = 0x48; *p++ = 0xb8; memcpy(p, &slot_helper, 8); p += 8; *p++ = 0xff; *p++ = 0xd0;
+    static const unsigned char add8[] = {0x48, 0x83, 0xc4, 0x08};
+    memcpy(p, add8, 4); p += 4;
+    memcpy(p, restore, sizeof(restore)); p += sizeof(restore);
+    memcpy(p, slot_original, SLOT_LENGTH); p += SLOT_LENGTH;
+    put_jump(p, (uintptr_t)(image + SLOT + SLOT_LENGTH));
+    protect(stubs, page_size, 5);
+    /* rel32 jumps: the stubs are in the low mapping right after the image (allocate). */
+    if (((which & 1) && !install_jump(REPORT, REPORT_LENGTH, stubs)) ||
+        ((which & 2) && !install_jump(SLOT, SLOT_LENGTH, slot_stub))) {
+        printf("Load diagnostics: unavailable (hook outside relative-jump range)\n");
+        return;
+    }
+    printf("Load diagnostics: the game's loader errors and models not loaded go to this log\n");
+}
+
 /* Damage dealt/taken and green/blue/gold orb multipliers (src/damage_hook.h, src/orb_hook.h):
  * the stubs read the menu's floats directly, so changes apply on the next hit or pickup. */
 static void install_stat_multipliers(Segment *segments, uint64_t count, uint64_t size) {
@@ -833,7 +1171,7 @@ int main(int argc, char **argv) {
     int cpu_only = 0, strict_imports = 0, check_imports = 0;
     unsigned timeout_seconds = 10;
     const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *patch_file=NULL, *isa_file=NULL, *pause_menu=NULL;
-    const char *mounts[8]; int mount_count=0;
+    const char *mounts[32]; int mount_count=0;
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
         else if (!strcmp(argv[i], "--strict-imports")) strict_imports = 1;
@@ -847,7 +1185,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--mount") && i+1<argc) {
             /* guest=host; the guest part never has '=', so the first one splits */
             const char *spec=argv[++i], *eq=strchr(spec,'=');
-            if (mount_count==8 || !eq || eq==spec || !eq[1]) { fprintf(stderr, "Bad --mount (guest=host, at most 8): %s\n", spec); return 1; }
+            if (mount_count==32 || !eq || eq==spec || !eq[1]) { fprintf(stderr, "Bad --mount (guest=host, at most 32): %s\n", spec); return 1; }
             mounts[mount_count++]=spec;
         }
         else if (!strcmp(argv[i], "--timeout") && i+1<argc) timeout_seconds=(unsigned)strtoul(argv[++i],NULL,10);
@@ -899,6 +1237,15 @@ int main(int argc, char **argv) {
         if (sfo_value(sfo,"INSTALL_DIR_SAVEDATA",id,sizeof(id),NULL) || sfo_value(sfo,"TITLE_ID",id,sizeof(id),NULL))
             runtime_savedata_configure(id);
     }
+    /* Discord Rich Presence: the game's state for scripts/discord_presence.py (run.py sets the file). */
+    const char *presence_file = getenv("GOW3_PRESENCE_FILE");
+    if (presence_file && *presence_file) runtime_presence_configure(presence_file);
+    /* GOW3_NET_HOST=1: this game hosts the match server of online play (GOW3_NET_PORT, 7788). */
+    const char *net_host = getenv("GOW3_NET_HOST");
+    if (net_host && *net_host && *net_host != '0') {
+        const char *net_port = getenv("GOW3_NET_PORT");
+        if (runtime_matchserver_start((uint16_t)(net_port ? atoi(net_port) : 0))) fail("cannot host the match server (is the port in use?)");
+    }
     gow3gpu_register_kernel();
 #ifdef _WIN32
     SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;
@@ -913,6 +1260,7 @@ int main(int argc, char **argv) {
     }
     watchdog_seconds = timeout_seconds;
     if (watchdog_seconds) CloseHandle(CreateThread(NULL,0,watchdog_thread,NULL,0,NULL));
+    CloseHandle(CreateThread(NULL,0,start_watch_thread,NULL,0,NULL));
 #else
     page_size = (size_t)sysconf(_SC_PAGESIZE);
     struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO;
@@ -1047,6 +1395,9 @@ int main(int argc, char **argv) {
         uint64_t sdk=0;
         if (procparam) memcpy(&sdk,image+procparam+16,8); /* procparam: size, magic, count, sdk_version */
         Gow3GpuConfig gpu={title,serial,user_dir ? user_dir : "user",(uint32_t)sdk,attributes,1920,1080};
+        /* #149: the game's memory pool before the GPU, whose blocking shader warm-up can
+         * otherwise leave too little commit for it on Windows. */
+        if (runtime_memory_commit()) fail("the guest memory pool could not be created");
         gpu_enabled=1; /* page tracking starts while the rasterizer registers guest memory */
         if (gow3gpu_init(&gpu)) fail("GPU initialization failed");
         printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,gow3gpu_symbol_count());
@@ -1098,6 +1449,7 @@ int main(int argc, char **argv) {
         _exit(missing ? 1 : 0); /* no destructors: GPU threads are running */
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
+    if (gpu_enabled) runtime_heap_trace_install(image, size); /* heap frees -> texture cache */
     /* Cheats, multipliers, QTE and menu hooks patch God of War III's code (CUSA01623) only. */
     char hooks_sfo[4096], hooks_serial[32]="";
     snprintf(hooks_sfo,sizeof(hooks_sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");
@@ -1115,6 +1467,10 @@ int main(int argc, char **argv) {
      * functions that keep data there go through trampolines (src/redzone.cpp). */
     bbport_red_zone_protect(argv[1], image, size, (const BbRedZoneSegment *)segments, ns);
 #endif
+    /* After the red zone pass, which must not take the hooks' jumps for the functions' code. */
+    const char *load_log = getenv("GOW3_LOAD_LOG"); /* 0: off; 1: errors only; 2: slots only (tests) */
+    if ((!strcmp(hooks_serial, "CUSA07671") || !strcmp(hooks_serial, "CUSA05670")) && !(load_log && *load_log == '0'))
+        install_wipeout_logs(segments, ns, load_log && *load_log == '1' ? 1 : load_log && *load_log == '2' ? 2 : 3);
     if (isa_table) {
         IsaReport r = isa_rewrite_apply(isa_table, image, stubs, isa_sets);
         if (r.unsupported_needed) {
@@ -1164,6 +1520,8 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     atexit(report_exit_caller); /* registered last, so it runs first */
     if ((profiling=getenv("GOW3_PROFILE")!=NULL)) CloseHandle(CreateThread(NULL,0,profiler_thread,NULL,0,NULL));
+    if (gpu_enabled && getenv("GOW3_CPU_PROFILE") && getenv("GOW3_CPU_PROFILE")[0]=='1')
+        CloseHandle(CreateThread(NULL,0,cpu_profiler_thread,NULL,0,NULL));
 #endif
     entered_game=1;
     struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};

@@ -363,6 +363,9 @@ public:
         return properties.deviceName;
     }
 
+    /// gow3: after a device loss, prints what VK_EXT_device_fault reports (once per process).
+    void LogDeviceFault() const;
+
     /// Returns if the device is an integrated GPU.
     bool IsIntegrated() const {
         return properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
@@ -520,7 +523,7 @@ public:
 private:
     Instance(const Frontend::WindowSystemInfo&, s32, bool, bool);
     /// Creates the logical device opportunistically enabling extensions
-    bool CreateDevice();
+    bool CreateDevice(bool needs_swapchain);
 
     /// Creates the VMA allocator handle
     void CreateAllocator();
@@ -578,6 +581,7 @@ private:
     bool vertex_input_dynamic_state{};
     bool list_restart{};
     bool provoking_vertex{};
+    bool device_fault{}; ///< gow3: VK_EXT_device_fault enabled (LogDeviceFault)
     bool shader_stencil_export{};
     bool image_load_store_lod{};
     bool amd_gcn_shader{};

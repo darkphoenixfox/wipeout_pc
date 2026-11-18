@@ -3,7 +3,9 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p out
 # Windows: MSYS2 CLANG64 (packages in packaging/windows/README.md). The GPU library is static
-# there and CMake links gow3-probe.exe as well; no PGO (GCC-only flags), LTO off by default.
+# there and CMake links gow3-probe.exe as well; LTO off by default. GOW3_PGO as below, with a
+# profile of its own, pgo/gow3gpu-windows.profdata: one recorded on Linux does not fit this build
+# (docs/gpu-profile.md).
 case $(uname -s) in
 MINGW*|MSYS*)
     # shellcheck source=msys2-env.sh
@@ -20,14 +22,18 @@ MINGW*|MSYS*)
             git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
         fi
     done
-    cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE="${GOW3_BUILD_TYPE:-RelWithDebInfo}" -DGOW3_PGO=off \
-        -DGOW3_LTO="${GOW3_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null
-    echo "GPU library and loader: LTO ${GOW3_LTO:-OFF}"
-    if ! ninja -C out/gpu gow3-probe gow3-gpu-capabilities gow3-play > out/gpu-build.log 2>&1; then
+    pgo=${GOW3_PGO:-}
+    if [[ -z $pgo ]]; then
+        if [[ -f pgo/gow3gpu-windows.profdata ]]; then pgo=use; else pgo=off; fi
+    fi
+    cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE="${GOW3_BUILD_TYPE:-RelWithDebInfo}" -DGOW3_PGO="$pgo" \
+        -DGOW3_PGO_PROFILE="$PWD/pgo/gow3gpu-windows.profdata" -DGOW3_LTO="${GOW3_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null
+    echo "GPU library and loader: PGO $pgo, LTO ${GOW3_LTO:-OFF}"
+    if ! ninja -C out/gpu gow3-probe gow3-gpu-capabilities gow3-play gow3-server > out/gpu-build.log 2>&1; then
         grep -v '^\[' out/gpu-build.log | tail -40 >&2
         echo 'Build failed (full log: out/gpu-build.log)' >&2; exit 1
     fi
-    cp out/gpu/gow3-probe.exe out/gpu/gow3-gpu-capabilities.exe out/gpu/gow3-play.exe out/
+    cp out/gpu/gow3-probe.exe out/gpu/gow3-gpu-capabilities.exe out/gpu/gow3-play.exe out/gpu/gow3-server.exe out/
     echo "Built $PWD/out/gow3-probe.exe"
     exit 0
     ;;
@@ -54,9 +60,25 @@ read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3 libavformat libavcodec
 # GPU library (shadPS4 video core + drivers), built by CMake into out/gpu/libgow3gpu.so.
 # GOW3_PGO: generate (instrumented build that writes pgo/ while the game runs), use, off.
 # Default: use the profile in pgo/ when there is one. GOW3_LTO=OFF disables link-time optimization.
+# GOW3_GPU_COMPILER: gcc (the default C++ compiler) or clang, for the GPU library only. With Clang the
+# profile is one file, pgo/gow3gpu.profdata (llvm-profdata merge), which also fits later sources; when it is
+# there, Clang and the profile are the default.
 pgo=${GOW3_PGO:-}
+gpu_compiler=${GOW3_GPU_COMPILER:-}
+if [[ -z $gpu_compiler ]]; then
+    if [[ -f pgo/gow3gpu.profdata ]]; then gpu_compiler=clang; else gpu_compiler=gcc; fi
+fi
 if [[ -z $pgo ]]; then
-    if [[ -n $(find pgo -name '*.gcda' -print -quit 2>/dev/null) ]]; then pgo=use; else pgo=off; fi
+    if [[ $gpu_compiler == clang && -f pgo/gow3gpu.profdata ]]; then pgo=use
+    elif [[ $gpu_compiler != clang && -n $(find pgo -name '*.gcda' -print -quit 2>/dev/null) ]]; then pgo=use
+    else pgo=off; fi
+fi
+gpu_toolchain=()
+if [[ $gpu_compiler == clang ]]; then
+    command -v clang++ >/dev/null && command -v ld.lld >/dev/null ||
+        { echo 'GOW3_GPU_COMPILER=clang needs clang, lld and llvm (llvm-ar).' >&2; exit 1; }
+    gpu_toolchain=(-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+                   -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld)
 fi
 mkdir -p pgo
 # Submodules (git clone --recursive, or: git submodule update --init) and this port's changes
@@ -70,10 +92,11 @@ for patch in gpu/patches/fsr-vulkan/*.patch; do
     fi
 done
 cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGOW3_PGO="$pgo" \
-    -DGOW3_LTO="${GOW3_LTO:-ON}" -DGOW3_PGO_DIR="$PWD/pgo" >/dev/null
-echo "GPU library: PGO $pgo, LTO ${GOW3_LTO:-ON}"
+    -DGOW3_LTO="${GOW3_LTO:-ON}" -DGOW3_PGO_DIR="$PWD/pgo" "${gpu_toolchain[@]}" >/dev/null
+echo "GPU library: compiler $gpu_compiler, PGO $pgo, LTO ${GOW3_LTO:-ON}"
 # A failed GPU build must stop here: an older libgow3gpu.so would otherwise be used silently.
 if ! ninja -C out/gpu gow3gpu > out/gpu-build.log 2>&1; then
+    grep -i -m8 -B2 -A6 'assert\|Stack dump\|Running pass' out/gpu-build.log >&2 || true
     grep -v '^\[' out/gpu-build.log | tail -40 >&2
     echo 'GPU library build failed (full log: out/gpu-build.log)' >&2; exit 1
 fi
@@ -91,6 +114,8 @@ fi
 "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -mgeneral-regs-only -c src/isa_emulate.c -o out/isa_emulate.o
 "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -no-pie "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/cpu_check.c src/vulkan_smoke.c out/isa_emulate.o src/isa_rewrite.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/gow3-probe
 echo "Built $PWD/out/gow3-probe"
+# The match server of online play on its own (the game hosts one too, GOW3_NET_HOST=1).
+"$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tools/gow3_server.c src/runtime_matchserver.c src/runtime_wire.c -o out/gow3-server
 # GPU check for run.sh (live_resolution=auto): links only the Vulkan loader.
 "$CC" -std=c11 -O2 -Wall -Wextra -Werror -Igpu/shadps4 tools/gpu_capabilities.c "${libraries[@]}" -o out/gow3-gpu-capabilities
 if [[ ${1:-} == --test ]]; then
@@ -116,8 +141,12 @@ if [[ ${1:-} == --test ]]; then
     out/videodec-test tests/data/tiny.h264
     "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_json.c src/runtime_json.c -o out/json-test
     out/json-test
+    "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_presence.c src/runtime_presence.c -o out/presence-test
+    out/presence-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_services.c -o out/services-test
     out/services-test
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_matching.c src/runtime_matchserver.c src/runtime_wire.c -o out/matching-test
+    out/matching-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -mbmi -mlzcnt -mmovbe -I. -Isrc tests/test_isa_emulate.c out/isa_emulate.o -o out/isa-emulate-test
     out/isa-emulate-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -c src/isa_rewrite.c -I. -Isrc -o out/isa_rewrite.o
