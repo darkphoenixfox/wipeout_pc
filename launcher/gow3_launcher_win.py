@@ -13,6 +13,7 @@ so a packaged port needs no Python installation.
 """
 import contextlib
 import glob
+import hashlib
 import importlib.util
 import json
 import math
@@ -25,6 +26,7 @@ import runpy
 import shutil
 import stat
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -45,6 +47,7 @@ FROZEN = getattr(sys, 'frozen', False)
 PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PORT_DIR / 'scripts'))
 import graphics_options  # noqa: E402  (scripts/)
+import online_host  # noqa: E402  (scripts/)
 import save_backup  # noqa: E402  (scripts/)
 import steam_shortcut  # noqa: E402  (scripts/)
 from patches import game_profile, game_sfo  # noqa: E402  (scripts/)
@@ -52,7 +55,10 @@ from prepare import load_sfo  # noqa: E402  (scripts/)
 DATA_DIR = Path(os.environ.get('GOW3_DATA_DIR', PORT_DIR))
 CONFIG_DIR = (Path(os.environ.get('APPDATA', Path.home())) if WINDOWS else
               Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')) / 'wipeout-launcher'
+if (DATA_DIR / 'settings.json').is_file():  # #203 portable: the launcher's settings stay next to it
+    CONFIG_DIR = DATA_DIR
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
+WINDOW_POSITION = CONFIG_DIR / 'window.json'  # #151: the launcher's last position
 MOD_PRESETS = DATA_DIR / 'mods_presets.json'
 APP_NAME = 'WipEout Omega Collection'
 MAX_LOG_LINES = 6000
@@ -61,7 +67,7 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 NEW_GROUP = {} if WINDOWS else {'start_new_session': True}
 UI_FONT, MONO_FONT, SERIF_FONT = 'Segoe UI', 'Consolas', 'Georgia'
 # This build; GitHub release tags are windows-v<VERSION>.
-VERSION = '0.2.20'
+VERSION = '0.2.76'
 RELEASES_API = 'https://api.github.com/repos/AbdelmoumenDeghbouche/wipeout_pc/releases/latest'
 RELEASES_PAGE = 'https://github.com/AbdelmoumenDeghbouche/wipeout_pc/releases/latest'
 UPDATE_DIR = Path(tempfile.gettempdir()) / 'gow3-update'
@@ -102,6 +108,27 @@ def attach_stdio():
         setattr(sys, name, stream or open(os.devnull, 'w'))
 
 
+class QuietStream:
+    """Writes to `stream` and drops what the system refuses: a front-end such as QuiverLauncher may
+    close the pipe that holds the output, and print() then raised OSError 22 (#63)."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, text):
+        try:
+            return self.stream.write(text)
+        except OSError:
+            return len(text)
+
+    def flush(self):
+        with contextlib.suppress(OSError):
+            self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 def load_mods():
     """Use the disk loader in every role; PyInstaller's importer otherwise wins over sys.path.
     Adapted from Kristian Andreev's PR #234."""
@@ -133,6 +160,7 @@ def run_role(argv):
             stream.reconfigure(encoding='utf-8', line_buffering=True)
         except (AttributeError, ValueError):
             pass
+    sys.stdout, sys.stderr = QuietStream(sys.stdout), QuietStream(sys.stderr)
     if argv[0] == '--script':
         path, sys.argv = argv[1], argv[1:]
     else:
@@ -314,6 +342,11 @@ def launcher_ui_scale(mode, desktop_scale=1.0):
     return float(mode) if mode in ('1', '2') else desktop_scale
 
 
+def can_update():
+    """Windows installs a zip; Linux replaces the AppImage it runs from (Knack #28)."""
+    return WINDOWS or bool(os.environ.get('APPIMAGE'))
+
+
 def host_environment():
     """The environment of the user's session for programs outside the bundle (xdg-open)."""
     env = dict(os.environ)
@@ -394,11 +427,10 @@ def heading_font(size, fallback=None, every_language=False):
 # Settings. gow3.ini keys (the game reads them, the in-game menu edits them) and the
 # launcher's own settings.json (passed to run.py as environment variables).
 
-INI_FLAGS = {'stereo', 'stereo_swap',
-             'cheat_double_jumps', 'cheat_very_hard', 'object_motion', 'show_fps', 'vsync', 'async_shaders', 'deferred_readback',
-             'stale_readback', 'music', 'music_shuffle'}
+INI_FLAGS = {'stereo', 'stereo_swap', 'cheat_double_jumps', 'cheat_very_hard', 'object_motion', 'show_fps', 'vsync', 'async_shaders', 'deferred_readback',
+             'stale_readback', 'music', 'music_shuffle', 'music_continue'}
 # The graphics keys are also in the in-game menu (Insert / R3+L2); run.py reads the startup ones.
-INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1', 'dlss_preset': '0',
+INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '0', 'dlss_preset': '0',
                 'object_motion': '1', 'show_fps': '1', 'output_res': '1920x1080',
                 'live_resolution': 'auto', 'display_mode': 'windowed', 'vsync': '1', 'fps_limit': '0',
                 'async_shaders': '1', 'deferred_readback': '1', 'stale_readback': '1',
@@ -406,29 +438,132 @@ INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1', 'dlss_preset': '0',
                 'stereo': '0', 'stereo_depth': '30', 'stereo_focus': '20', 'stereo_popout': '20', 'stereo_swap': '0',
                 'stereo_output': 'sbs',
                 'frames_queued': '1', 'cheat_very_hard': '0', 'cheat_double_jumps': '0',
-                'anisotropy': '0', 'vibration': '100', 'mouse_prompt_distance': '48', 'mouse_lock': '1',
-                'mouse_aim_style': '0', 'mouse_aim_sensitivity': '100', 'music': '1', 'music_shuffle': '1',
-                'music_volume': '100'}
+                'anisotropy': '0', 'vibration': '100', 'stick_deadzone': '0', 'mouse_prompt_distance': '48', 'mouse_lock': '1',
+                'mouse_aim_style': '0', 'mouse_aim_sensitivity': '100', 'music': '1', 'music_shuffle': '1', 'music_continue': '0',
+                'music_volume': '100', 'game_music_volume': '100'}
 DISPLAY_MODES = [('windowed', ('Windowed',)), ('borderless', ('Borderless',)), ('fullscreen', ('Fullscreen',))]
 ANISOTROPY = [('0', ('Game default',)), ('2', ('2x',)), ('4', ('4x',)), ('8', ('8x',)), ('16', ('16x',))]
-FPS_LIMITS = [('30', ('30',)), ('60', ('60',)), ('100', ('100',)), ('120', ('120',)), ('240', ('240',)), ('0', ('Unlimited',))]
+FPS_LIMITS = [('30', ('30',)), ('40', ('40',)), ('60', ('60',)), ('100', ('100',)), ('120', ('120',)), ('144', ('144',)), ('165', ('165',)), ('240', ('240',)), ('0', ('Unlimited',))]
 # The sidebar's pages, top to bottom, and the methods that refresh a page's lists when it is shown.
-PAGES = ('home', 'graphics', 'performance', 'game', 'cheats', 'music', 'controls', 'mods', 'advanced')
+PAGES = ('home', 'graphics', 'performance', 'game', 'online', 'cheats', 'music', 'controls', 'mods', 'advanced')
 PAGE_REFRESH = {'home': ('refresh_status',), 'game': ('refresh_game_patches',), 'music': ('refresh_music',),
                 'mods': ('refresh_lists',)}
+# #145: XInput buttons (the left stick reads as the D-pad) and what they do in the launcher.
+PAD_ACTIONS = ((0x1, 'up'), (0x2, 'down'), (0x4, 'left'), (0x8, 'right'), (0x10, 'play'), (0x20, 'save'),
+               (0x100, 'prev_page'), (0x200, 'next_page'), (0x1000, 'select'), (0x2000, 'back'))
+
+
+def xinput_buttons():
+    """The first connected Xbox controller's buttons, None when there is none (LINUX_PAD on Linux)."""
+    if not WINDOWS:
+        return LINUX_PAD.read()
+    global _xinput
+    if '_xinput' not in globals():
+        _xinput = None
+        for name in ('xinput1_4', 'xinput9_1_0'):
+            with contextlib.suppress(OSError):
+                _xinput = ctypes.WinDLL(name).XInputGetState
+                break
+    if not _xinput:
+        return None
+    state = (ctypes.c_ubyte * 16)()  # dwPacketNumber, wButtons, triggers, thumb LX, LY, RX, RY
+    for pad in range(4):
+        if _xinput(pad, state) == 0:
+            buttons, lx, ly = int.from_bytes(bytes(state[4:6]), 'little'), \
+                int.from_bytes(bytes(state[8:10]), 'little', signed=True), \
+                int.from_bytes(bytes(state[10:12]), 'little', signed=True)
+            return buttons | (ly > 16000) | (ly < -16000) << 1 | (lx < -16000) << 2 | (lx > 16000) << 3
+    return None
+
+
+# Knack #28: on Linux the first joystick device (/dev/input/js*, readable without extra groups) gives
+# the same bits as xinput_buttons. Its buttons and axes are found by the kernel's codes (JSIOCGBTNMAP,
+# JSIOCGAXMAP), so Xbox, PlayStation and Steam Deck pads map alike.
+JS_KEYS = {0x130: 0x1000, 0x131: 0x2000, 0x136: 0x100, 0x137: 0x200, 0x13a: 0x20, 0x13b: 0x10,
+           0x220: 0x1, 0x221: 0x2, 0x222: 0x4, 0x223: 0x8}  # BTN_SOUTH, EAST, TL, TR, SELECT, START, D-pad
+JS_AXES = {0x00: (0x4, 0x8), 0x01: (0x1, 0x2), 0x10: (0x4, 0x8), 0x11: (0x1, 0x2)}  # X, Y, hat X, hat Y
+JS_DEFAULT_KEYS = (0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e)  # xpad order
+JS_DEFAULT_AXES = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11)
+
+
+class LinuxPad:
+    def __init__(self):
+        self.fd, self.keys, self.axes, self.down, self.values, self.next_try = None, JS_DEFAULT_KEYS, JS_DEFAULT_AXES, set(), {}, 0.0
+
+    def feed(self, data):
+        """js_event records (u32 time, s16 value, u8 type, u8 number), JS_EVENT_INIT ones included."""
+        for offset in range(0, len(data) - 7, 8):
+            _time, value, kind, number = struct.unpack_from('<IhBB', data, offset)
+            if kind & 0x7f == 1 and number < len(self.keys):
+                (self.down.add if value else self.down.discard)(self.keys[number])
+            elif kind & 0x7f == 2 and number < len(self.axes):
+                self.values[self.axes[number]] = value
+
+    def buttons(self):
+        bits = 0
+        for code in self.down:
+            bits |= JS_KEYS.get(code, 0)
+        for code, (negative, positive) in JS_AXES.items():
+            value = self.values.get(code, 0)
+            bits |= negative if value < -16000 else positive if value > 16000 else 0
+        return bits
+
+    def read(self):
+        """The buttons now; None without a joystick (looked for every 3 seconds)."""
+        if self.fd is None:
+            if time.monotonic() < self.next_try:
+                return None
+            self.next_try = time.monotonic() + 3
+            for path in sorted(glob.glob('/dev/input/js*')):
+                with contextlib.suppress(OSError):
+                    self.fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                    self.keys, self.axes, self.down, self.values = JS_DEFAULT_KEYS, JS_DEFAULT_AXES, set(), {}
+                    with contextlib.suppress(OSError, ImportError):
+                        import array
+                        import fcntl
+                        count = array.array('B', [0])
+                        fcntl.ioctl(self.fd, 0x80016a12, count)  # JSIOCGBUTTONS
+                        keys = array.array('H', [0] * 0x200)
+                        fcntl.ioctl(self.fd, 0x84006a34, keys)  # JSIOCGBTNMAP
+                        self.keys = tuple(keys[:count[0]])
+                        count = array.array('B', [0])
+                        fcntl.ioctl(self.fd, 0x80016a11, count)  # JSIOCGAXES
+                        axes = array.array('B', [0] * 0x40)
+                        fcntl.ioctl(self.fd, 0x80406a32, axes)  # JSIOCGAXMAP
+                        self.axes = tuple(axes[:count[0]])
+                    break
+            if self.fd is None:
+                return None
+        try:
+            while data := os.read(self.fd, 8 * 64):
+                self.feed(data)
+        except BlockingIOError:
+            pass
+        except OSError:  # unplugged
+            os.close(self.fd)
+            self.fd = None
+            return None
+        return self.buttons()
+
+
+LINUX_PAD = LinuxPad()
 # The custom soundtrack's file types, as src/runtime_music.c.
 MUSIC_TYPES = ('.mp3', '.ogg', '.oga', '.opus', '.flac', '.wav', '.m4a', '.aac', '.wma')
 UI_SCALES = [('auto', ('Auto',)), ('1', ('1x',)), ('2', ('2x',))]
-APP_DEFAULTS = {'ui_language': 'en', 'ui_scale': 'auto', 'game_dir': os.environ.get('GOW3_GAME_DIR', str(PORT_DIR.parent / 'CUSA07671') if WINDOWS else ''), 'update_dir': '', 'experimental_upscaler': False, 'ps4_pro': False, 'cheat_events': False, 'cheat_rank': False, 'cheat_ships': False,
-                'video_backend': 'auto', 'gamemode': False, 'mangohud': False, 'desktop_integration': True, 'user_dir': '',
-                'music_dir': '', 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
-                'hdr': False, 'draw_pipe': '', 'readbacks': '', 'no_msaa': '', 'stream_memory': 'cached',
+# GOW3_PAD_SCHEME (src/runtime_pad.c apply_scheme): the Vita's "Racer" layout of WipEout 2048 (#99).
+PAD_SCHEMES = [('', ("Standard (the game's)",)), ('racer', ('Racer: R2 accelerate, L2 brake',))]
+GAMEPAD_NUMBERS = [('1', ('First connected',)), ('2', ('Second connected',)), ('3', ('Third connected',)),
+                   ('4', ('Fourth connected',))]
+APP_DEFAULTS = {'ui_language': 'en', 'ui_scale': 'auto', 'game_dir': os.environ.get('GOW3_GAME_DIR', str(PORT_DIR.parent / 'CUSA07671') if WINDOWS else ''), 'update_dir': '', 'experimental_upscaler': False, 'ps4_pro': False, 'cheat_events': False, 'cheat_rank': False, 'cheat_ships': False, 'cheat_van_uber': False, 'cheat_vr_ships': False,
+                'video_backend': 'auto', 'gamemode': False, 'mangohud': False, 'desktop_integration': True, 'user_dir': '', 'savedata_dir': '',
+                'music_dir': '', 'player_name': '', 'profile': '', 'online_enabled': False, 'online_role': 'host', 'online_code': '', 'online_port': '7788', 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
+                'hdr': False, 'draw_pipe': '', 'readbacks': '', 'no_msaa': '', 'stream_memory': 'cached', 'texture_limit': '',
                 'gpu_id': '', 'partial_height_views': True, 'background_warmup': True, 'parallel_warmup': True, 'pipeline_binary_cache': True,
                 'perf_diag': False, 'frame_capture_key': False, 'upscaler_key': False, 'frame_stats': False, 'gpu_profile': False,
                 'vk_validation': False, 'close_on_play': False, 'discord_rpc': False,
-                'update_popup': True, 'game_patches': {}, 'controls': {}, 'pad_style': 'playstation',
+                'update_popup': True, 'launcher_gamepad': True, 'menu_fps_cap': True, 'photo_flare': True, 'adaptive_reflections': True, 'game_patches': {}, 'controls': {}, 'pad_style': 'playstation', 'gamepad_number': '1', 'pad_scheme': '',
                 'controls_layout': 2,
-                'glyph_style': 'off'}
+                'glyph_style': 'off', 'eliminator_limit': '2000'}
 
 # PS4 button, default key, default gamepad button (SDL names; src/runtime_pad.c). L2/R2 come
 # from the analog triggers and the left touchpad click (photo mode) from L1 + the right click's
@@ -438,11 +573,13 @@ CONTROLS = [('cross', 'Space', 'a'), ('circle', 'Left Shift', 'b'), ('square', '
             ('l2', 'R', None), ('r2', 'F', None), ('l3', 'Z', 'leftstick'),
             ('r3', 'C', 'rightstick'), ('options', 'Return', 'start'),
             ('touchpad_left', 'Tab', None), ('touchpad_right', 'Backspace', 'back'),
-            ('up', 'I', 'dpup'), ('down', 'K', 'dpdown'), ('left', 'J', 'dpleft'), ('right', 'L', 'dpright')]
+            ('up', 'I', 'dpup'), ('down', 'K', 'dpdown'), ('left', 'J', 'dpleft'), ('right', 'L', 'dpright'),
+            ('trick', 'V', '')]  # #207: no gamepad button by default ('' = none, bindable)
 PS_BUTTON_NAMES = {'cross': 'Cross', 'circle': 'Circle', 'square': 'Square', 'triangle': 'Triangle',
                    'l1': 'L1', 'r1': 'R1', 'l2': 'L2', 'r2': 'R2', 'l3': 'L3', 'r3': 'R3',
                    'options': 'Options', 'touchpad_left': 'Touchpad left', 'touchpad_right': 'Touchpad right',
-                   'up': 'D-pad up', 'down': 'D-pad down', 'left': 'D-pad left', 'right': 'D-pad right'}
+                   'up': 'D-pad up', 'down': 'D-pad down', 'left': 'D-pad left', 'right': 'D-pad right',
+                   'trick': 'Side-shift / barrel roll'}
 # Gamepad buttons by SDL name, labelled as on a PlayStation or an Xbox controller.
 PAD_STYLES = {
     'playstation': {'a': 'Cross', 'b': 'Circle', 'x': 'Square', 'y': 'Triangle', 'leftshoulder': 'L1',
@@ -594,7 +731,7 @@ def keyboard_map(controls):
 def control_changes(values, kind):
     """The buttons whose chosen key or SDL gamepad name differs from the default."""
     return {row[0]: values[row[0]].strip() for row in CONTROLS
-            if default_input(row, kind) and values.get(row[0], '').strip()
+            if default_input(row, kind) is not None and values.get(row[0], '').strip()
             and values[row[0]].strip().casefold() != default_input(row, kind).casefold()}
 
 
@@ -608,7 +745,8 @@ def control_values(controls, kind):
     if 'touchpad' in chosen and 'touchpad_left' not in values:
         values['touchpad_left'] = chosen['touchpad']
     return {button: values[button] for button, key, pad in CONTROLS
-            if (pad if kind == 'pad' else key) and isinstance(values.get(button), str) and values[button].strip()}
+            if (pad if kind == 'pad' else key) is not None and isinstance(values.get(button), str)
+            and values[button].strip()}
 
 
 def control_map(controls, kind):
@@ -649,6 +787,10 @@ DLSS_PRESETS = [('0', ('Driver default (K)',)), ('11', ('K (transformer)',)),
                 ('10', ('J (less ghosting, more flicker)',))]
 PRESETS = [('0', ('Native AA (×1.0)',)), ('1', ('Quality (×1.5)',)), ('2', ('Balanced (×1.7)',)),
            ('3', ('Performance (×2)',)), ('4', ('Ultra Performance (×3)',))]
+# The upscaling choice of the Anti-aliasing section (#51): the scene at 1/x of the render
+# resolution per axis, scaled up by FSR 3.1 or DLSS; the HUD stays at full size.
+UPSCALE_PRESETS = [('0', ('Off (full resolution)',)), ('1', ('Quality (scene at 1/1.5)',)),
+                   ('2', ('Balanced (scene at 1/1.7)',)), ('3', ('Performance (scene at 1/2)',))]
 OUTPUTS = [('1280x720', ('1280 × 720 (Steam Deck)',)), ('1920x1080', ('1920 × 1080',)),
            ('2560x1440', ('2560 × 1440',)), ('3840x2160', ('3840 × 2160 (4K)',))]
 LIVE = [('auto', ('Auto (by graphics card)', 'Авто (по видеокарте)')), ('0', ('Off (faster)', 'Выключена (быстрее)')),
@@ -702,6 +844,9 @@ STREAM_MEMORY = [('cached', ('System RAM (cached, default)',)),
                  ('host', ('System RAM (uncached)',)),
                  ('device', ('GPU memory (previous behavior)',))]
 FRAMES_QUEUED = [('1', ('1 (lowest latency)',)), ('2', ('2',)), ('0', ('Unlimited',))]
+# GOW3_TEXTURE_LIMIT (texture_cache.h LimitTextureSize): the largest textures load at most this big.
+TEXTURE_LIMITS = [('', ('Full (default)',)), ('4096', ('Medium (largest textures at 4096)',)),
+                  ('2048', ('Low (for 4 GB graphics cards)',))]
 # The Cheats page: (setting, patch in the game's patch file, title, hint).
 CHEATS = (('cheat_events', 'Cheat - Unlock all HD and Fury events', 'Unlock all HD and HD Fury events',
            ('Every event of the HD and HD Fury campaigns is open; the campaign screen shows 99998 points. '
@@ -711,8 +856,14 @@ CHEATS = (('cheat_events', 'Cheat - Unlock all HD and Fury events', 'Unlock all 
             'save. Off: your own rank comes back.')),
           ('cheat_ships', 'Cheat - Unlock all ships', 'Unlock all ships (HD, HD Fury and 2048)',
            ('Every ship and livery is open: the ones that need medals, team loyalty, play time or a campaign '
-            'grid, and the 2048 ships that need a rank, a 2048 event or a prototype challenge. Not the VR '
-            'versions, nor the Tigron and Van-Uber DLC teams. Off: they need your own progress again.')))
+            'grid, Tigron, and the 2048 ships that need a rank, a 2048 event or a prototype challenge. Not the VR '
+            'versions, nor the Van-Uber team (their own cheats below). Off: they need your own progress again.')),
+          ('cheat_van_uber', 'Cheat - Van Uber team (owned DLC)', 'Van Über team (owned DLC)',
+           ('For a copy whose PSN account owns the Van Über team DLC: the game sees it as installed, offline. '
+            "Off: the team needs the console's entitlement again.")),
+          ('cheat_vr_ships', 'Cheat - VR ships outside VR', 'VR ship liveries outside VR',
+           ('The VR HD and VR Fury liveries can be picked on a normal screen too, once they are unlocked. '
+            'Off: they need PlayStation VR mode again.')))
 UI_LANGUAGES = gow3_lang.LANGUAGE_NAMES
 
 def fsr4_folder():
@@ -720,6 +871,15 @@ def fsr4_folder():
     if WINDOWS or os.access(PORT_DIR, os.W_OK):
         return PORT_DIR / 'fsr4_shaders'
     return DATA_DIR / 'fsr4_shaders'
+
+
+def on_screen(x, y):
+    """Whether a window's top-left corner at x, y lies on a monitor (Windows; elsewhere: yes)."""
+    if not WINDOWS:
+        return True
+    import ctypes.wintypes
+    point = ctypes.wintypes.POINT(x + 40, y + 20)  # a little inside: the title bar
+    return bool(ctypes.windll.user32.MonitorFromPoint(point, 0))  # MONITOR_DEFAULTTONULL
 
 
 def load_json(path, default):
@@ -733,8 +893,25 @@ def ini_path():
     return Path(os.environ.get('GOW3_CONFIG', DATA_DIR / 'gow3.ini'))
 
 
+DMI_PRODUCT_NAME = Path('/sys/devices/virtual/dmi/id/product_name')
+
+
+def steam_deck():
+    """A Steam Deck (LCD: Jupiter, OLED: Galileo), by the product name Linux reads from the firmware."""
+    if WINDOWS:
+        return False
+    try:
+        return DMI_PRODUCT_NAME.read_text(encoding='utf-8').strip() in ('Jupiter', 'Galileo')
+    except OSError:
+        return False
+
+
 def load_ini():
     values, lines = dict(INI_DEFAULTS), []
+    # The Deck shows 16:9 letterboxed in its 1280x800 panel: a 1280x720 output is the same picture,
+    # races 47-53 -> 58-60 FPS (2026-11-02, docs/steam-deck-performance.md). A saved value wins.
+    if steam_deck():
+        values['output_res'] = '1280x720'
     try:
         lines = ini_path().read_text(encoding='utf-8').splitlines()
     except OSError:
@@ -1095,11 +1272,64 @@ def game_profile_of(folder):
     return title_id, game_profile_for(folder)
 
 
+# NVIDIA's DLSS runtime is not in the package: the launcher downloads it on request from NVIDIA's
+# own repository, the SDK release gow3_dlss.dll is built with (.github/workflows/windows-zip.yml),
+# and keeps it only when its SHA-256 matches. Updates copy over bin/ and keep it.
+DLSS_SDK_VERSION = '310.9.16'
+DLSS_RUNTIME_URL = ('https://raw.githubusercontent.com/NVIDIA/DLSS/v' + DLSS_SDK_VERSION +
+                    '/lib/Windows_x86_64/rel/nvngx_dlss.dll')
+DLSS_RUNTIME_SHA256 = 'd00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e'
+DLSS_RUNTIME_MB = 56
+
+
+def dlss_directory():
+    """Where gow3-probe looks for gow3_dlss.dll and nvngx_dlss.dll: beside itself."""
+    probe = find_tool('gow3-probe' + ('.exe' if WINDOWS else ''))
+    return Path(probe).parent if probe else PORT_DIR / ('bin' if FROZEN else 'out')
+
+
+def dlss_bridge_installed():
+    """gow3_dlss.dll (the port's bridge to NVIDIA's SDK, Windows only) is in this build."""
+    return WINDOWS and (dlss_directory() / 'gow3_dlss.dll').is_file()
+
+
 def dlss_installed():
-    """Whether the DLSS bridge and NVIDIA's runtime sit next to gow3-probe (packaged bin/ or a build's
-    out/). Whether the GPU can run DLSS is only known in the game; without it the game uses FSR 3.1."""
-    return WINDOWS and any((d / 'gow3_dlss.dll').is_file() and (d / 'nvngx_dlss.dll').is_file()
-                           for d in (PORT_DIR / 'bin', PORT_DIR / 'out'))
+    """Whether the DLSS bridge and NVIDIA's runtime sit next to gow3-probe. Whether the GPU can run
+    DLSS is only known in the game; without it the game uses FSR 3.1."""
+    return dlss_bridge_installed() and (dlss_directory() / 'nvngx_dlss.dll').is_file()
+
+
+def rtx_gpu(gpus):
+    """True when a GPU is an NVIDIA RTX card (DLSS needs one), False when none is, None when unknown."""
+    if not gpus:
+        return None
+    return any('RTX' in row[1].upper() for row in gpus)  # also 'Quadro RTX 4000', without NVIDIA
+
+
+def download_dlss_runtime(directory, progress=None, url=DLSS_RUNTIME_URL, sha256=DLSS_RUNTIME_SHA256,
+                          opener=urllib.request.urlopen):
+    """Downloads NVIDIA's nvngx_dlss.dll into `directory` and keeps it only when its SHA-256 matches;
+    progress(done, total) is called per MiB. Returns the file; raises OSError or ValueError."""
+    directory = Path(directory)
+    part = directory / 'nvngx_dlss.dll.part'
+    digest = hashlib.sha256()
+    try:
+        request = urllib.request.Request(url, headers={'User-Agent': 'wipeout-launcher'})
+        with opener(request, timeout=60) as response, open(part, 'wb') as out:
+            total, done = int(response.headers.get('Content-Length') or 0), 0
+            while chunk := response.read(1 << 20):
+                out.write(chunk)
+                digest.update(chunk)
+                done += len(chunk)
+                if progress:
+                    progress(done, total)
+        if digest.hexdigest() != sha256:
+            raise ValueError("the download does not match NVIDIA's file (SHA-256)")
+        target = directory / 'nvngx_dlss.dll'
+        os.replace(part, target)
+        return target
+    finally:
+        part.unlink(missing_ok=True)
 
 
 def game_environment(s):
@@ -1109,6 +1339,12 @@ def game_environment(s):
     # The Graphics page's anti-aliasing switch (build_graphics); off, run.py keeps the upscaler out.
     env['GOW3_EXPERIMENTAL_UPSCALER'] = '1' if s.get('experimental_upscaler') else '0'
     env['GOW3_NEO'] = '1' if s.get('ps4_pro') else '0'  # the game asks sceKernelIsNeoMode
+    if not s.get('menu_fps_cap', True):  # #177: menus at the frame rate limit too (the profile caps them at 60)
+        env['GOW3_MENU_FPS'] = '0'
+    if not s.get('photo_flare', True):  # #199: the photo mode's lens flare left out
+        env['GOW3_PHOTO_FLARE'] = '0'
+    if not s.get('adaptive_reflections', True):  # the camera ship's reflection always at its full rate
+        env['GOW3_CUBE_BUDGET'] = 'off'
     if s.get('update_dir'):
         env['GOW3_PATCH_DIR'] = s['update_dir']
     if not WINDOWS:
@@ -1128,6 +1364,13 @@ def game_environment(s):
         env['GOW3_PATCHES'] = ';'.join([n for n in env.get('GOW3_PATCHES', '').split(';') if n] + cheats)
     if s['user_dir']:
         env['GOW3_USER_DIR'] = s['user_dir']
+    env.pop('GOW3_SAVEDATA_DIR', None)
+    if s.get('savedata_dir'):
+        env['GOW3_SAVEDATA_DIR'] = s['savedata_dir']
+    env['GOW3_GAMEPAD'] = str(s.get('gamepad_number') or '1')
+    env.pop('GOW3_PAD_SCHEME', None)
+    if s.get('pad_scheme') == 'racer':
+        env['GOW3_PAD_SCHEME'] = 'racer'
     env.pop('GOW3_MUSIC_DIR', None)
     if s.get('music_dir'):
         env['GOW3_MUSIC_DIR'] = s['music_dir']
@@ -1139,6 +1382,31 @@ def game_environment(s):
     env['GOW3_PATCHES_DIR'] = s['patches_dir'] or str(DATA_DIR / 'patches')
     env['GOW3_PATCHES_CONFIG'] = str(DATA_DIR / 'patches.json')
     env['GOW3_LANGUAGE'] = s['language']
+    env.pop('GOW3_PROFILE', None)
+    if s.get('profile', '').strip():  # #162: src/runtime_savedata.c keeps its saves in profiles/<name>
+        env['GOW3_PROFILE'] = s['profile'].strip()
+    env.pop('GOW3_USER_NAME', None)
+    if s.get('player_name', '').strip():
+        env['GOW3_USER_NAME'] = s['player_name'].strip()[:16]
+    # The Online page's switch: off, the game is signed out of its network. On, it hosts the match
+    # server itself (runtime_matchserver.c) or joins one, at the address PLAY found.
+    for key in ('GOW3_NET_SERVER', 'GOW3_NET_HOST', 'GOW3_NET_PORT'):
+        env.pop(key, None)
+    if s.get('online_enabled'):
+        env['GOW3_USER_NAME'] = online_host.online_name(s.get('player_name', ''))
+        if s.get('online_role') == 'join':
+            address = s.get('online_address')
+            if not address:
+                try:
+                    address = online_host.join_candidates(s.get('online_code', ''))[-1]
+                except ValueError:
+                    address = ''
+            if address:
+                env['GOW3_NET_SERVER'] = address
+        else:
+            env['GOW3_NET_HOST'] = '1'
+            env['GOW3_NET_PORT'] = str(s.get('online_host_port') or s.get('online_port') or online_host.DEFAULT_PORT)
+    env['GOW3_ELIMINATOR_LIMIT'] = str(s.get('eliminator_limit', APP_DEFAULTS['eliminator_limit']))
     env['GOW3_DISCORD'] = '1' if s.get('discord_rpc') else '0'
     if s['hdr']:
         env['GOW3_HDR'] = '1'
@@ -1149,6 +1417,9 @@ def game_environment(s):
     # The saved UI choice wins over inherited diagnostic overrides, including when reverting.
     stream_memory = s.get('stream_memory', APP_DEFAULTS['stream_memory'])
     env['GOW3_STREAM_MEMORY'] = stream_memory if stream_memory in ('cached', 'host', 'device') else 'cached'
+    env.pop('GOW3_TEXTURE_LIMIT', None)
+    if s.get('texture_limit') in ('4096', '2048'):
+        env['GOW3_TEXTURE_LIMIT'] = s['texture_limit']
     gpu_id = str(s.get('gpu_id', ''))
     env.pop('GOW3_GPU_ID', None)
     if gpu_id.isdigit():
@@ -1266,7 +1537,8 @@ class Launcher:
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self.drain_output)
         root.after(500, self.watch_changes)
-        if WINDOWS and self.app['update_popup']:
+        root.after(500, self.poll_gamepad)
+        if can_update() and self.app['update_popup']:
             threading.Thread(target=self.check_update, daemon=True).start()
 
     def meta_dir(self):
@@ -1315,6 +1587,11 @@ class Launcher:
             window_width = min(window_width, int(self.root.winfo_screenwidth() * 0.9))
             window_height = min(window_height, int(self.root.winfo_screenheight() * 0.9))
             self.root.geometry(f'{window_width}x{window_height}')
+        # #151: where the window was when it was last closed, while that spot is still on a screen.
+        position = load_json(WINDOW_POSITION, {})
+        x, y = (position.get('x'), position.get('y')) if isinstance(position, dict) else (None, None)
+        if isinstance(x, int) and isinstance(y, int) and on_screen(x, y):
+            self.root.geometry(f'{window_width}x{window_height}{x:+d}{y:+d}')
         self.root.minsize(min(self.px(980), window_width), min(self.px(660), window_height))
 
     def set_icon(self):
@@ -1568,11 +1845,11 @@ class Launcher:
         self.ttk.Label(parent, text=text, style='Muted.TLabel', wraplength=self.px(680), justify='left').grid(
             row=self.next_row(parent), column=0, columnspan=2, sticky='w', pady=self.px((top, 0)))
 
-    def slider(self, parent, key, low, high, unit):
-        """A gow3.ini number on a slider, with its value beside it."""
+    def slider(self, parent, key, low, high, unit, store='ini', step=1):
+        """A gow3.ini (or launcher) number on a slider, with its value beside it."""
         holder = self.ttk.Frame(parent)
-        amount = self.var(key, 'ini')
-        self.tk.Scale(holder, from_=low, to=high, orient='horizontal', variable=amount, showvalue=False,
+        amount = self.var(key, store)
+        self.tk.Scale(holder, from_=low, to=high, resolution=step, orient='horizontal', variable=amount, showvalue=False,
                       length=self.px(260), width=self.px(12), sliderlength=self.px(18), bg=ACCENT, troughcolor=CARD,
                       activebackground=ACCENT_HI, highlightthickness=0, bd=0, sliderrelief='flat').pack(side='left')
         value = self.ttk.Label(holder, width=7)
@@ -1626,6 +1903,14 @@ class Launcher:
         canvas.pack(side='left', fill='both', expand=True)
         outer.scroll = lambda units: canvas.yview_scroll(units, 'units') if inner.winfo_height() > canvas.winfo_height() else None
 
+        def see(widget):  # a controller moved the focus (#145): keep it in view
+            height = max(1, inner.winfo_height())
+            y = widget.winfo_rooty() - inner.winfo_rooty()
+            top, bottom = (f * height for f in canvas.yview())
+            if y < top or y + widget.winfo_height() > bottom:
+                canvas.yview_moveto(max(0.0, (y - canvas.winfo_height() / 3) / height))
+        outer.see = see
+
         def fit():  # after a section is hidden: the shorter content, kept in view
             canvas.update_idletasks()
             canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), inner.winfo_reqheight()))
@@ -1647,7 +1932,7 @@ class Launcher:
         self.side = side
         self.nav, self.current_page = {}, None
         titles = {'home': _('Home'), 'graphics': _('Graphics', 'Графика'), 'performance': _('Performance'),
-                  'game': _('Game', 'Игра'), 'cheats': _('Cheats'), 'music': _('Music'), 'controls': _('Controls', 'Управление'), 'mods': _('Mods', 'Моды'), 'advanced': _('Advanced', 'Дополнительно')}
+                  'game': _('Game', 'Игра'), 'online': _('Online', 'Онлайн'), 'cheats': _('Cheats'), 'music': _('Music'), 'controls': _('Controls', 'Управление'), 'mods': _('Mods', 'Моды'), 'advanced': _('Advanced', 'Дополнительно')}
         for name in PAGES:
             item = tk.Label(side, text='    ' + titles[name], bg=BG, fg=TEXT, anchor='w',
                             font=self.heading_font(11, UI_FONT),
@@ -1676,6 +1961,10 @@ class Launcher:
         self.play_button.pack(side='right', padx=(self.px(10), self.px(24)), pady=self.px(11))
         self.save_button = ttk.Button(bar, text=_('Save', 'Сохранить'), command=self.save, state='disabled')
         self.save_button.pack(side='right', pady=self.px(11))
+        if WINDOWS:  # next to Save: on the Advanced page players did not find it
+            ttk.Button(bar, text=_('Check for updates', 'Проверить обновления'),
+                       command=lambda: threading.Thread(target=self.check_update, args=(True,), daemon=True).start()
+                       ).pack(side='right', padx=self.px((0, 6)), pady=self.px(11))
         self.content = tk.Frame(right, bg=PANEL)
         self.content.pack(fill='both', expand=True)
 
@@ -1684,6 +1973,7 @@ class Launcher:
         self.build_graphics()
         self.build_performance()
         self.build_game()
+        self.build_online()
         self.build_cheats()
         self.build_music_page()
         self.build_controls()
@@ -1696,6 +1986,8 @@ class Launcher:
         self.game_changed()
 
     def wheel(self, event):
+        if hasattr(self, 'pad_marker'):  # it would stay put over the scrolled page
+            self.pad_marker.place_forget()
         if self.capture_wheel:
             return self.capture_wheel(event)
         page = self.pages.get(self.current_page)
@@ -1703,7 +1995,71 @@ class Launcher:
                 and 'popdown' not in str(event.widget):
             page.scroll({4: -1, 5: 1}.get(event.num) or int(-event.delta / 120))
 
+    def in_front(self):
+        """Whether the launcher window has the focus (its gamepad input is only for itself)."""
+        if WINDOWS:
+            return ctypes.windll.user32.GetForegroundWindow() == int(self.root.wm_frame(), 16)
+        try:
+            return self.root.focus_displayof() is not None
+        except self.tk.TclError:
+            return False
+
+    def poll_gamepad(self):
+        """#145: an Xbox (XInput) controller drives the launcher while its window is in front:
+        LB/RB pages, D-pad or left stick up/down moves, left/right changes a choice or a slider,
+        A selects, B goes home, Start plays, Back saves."""
+        state = xinput_buttons()
+        on = self.var('launcher_gamepad', 'app').get()  # #179: off for players who move the cursor with the stick
+        held = state if on and state and self.in_front() else 0
+        now = time.monotonic()
+        fire = held & ~getattr(self, 'pad_prev', 0)
+        if fire:
+            self.pad_repeat_at = now + 0.4
+        elif held & 0xF and now >= getattr(self, 'pad_repeat_at', now):  # a held direction repeats
+            fire, self.pad_repeat_at = held & 0xF, now + 0.12
+        self.pad_prev = held
+        for bit, action in PAD_ACTIONS:
+            if fire & bit:
+                self.gamepad_action(action)
+        self.root.after(33 if state is not None else 1000, self.poll_gamepad)
+
+    def gamepad_action(self, action):
+        page = self.pages[self.current_page]
+        widget = self.root.focus_get()
+        if action in ('prev_page', 'next_page'):
+            i = PAGES.index(self.current_page) + (1 if action == 'next_page' else -1)
+            self.show(PAGES[i % len(PAGES)])
+        elif action in ('up', 'down'):
+            nxt = (widget.tk_focusNext() if action == 'down' else widget.tk_focusPrev()) if widget else \
+                page.tk_focusNext()
+            if nxt:
+                nxt.focus_set()
+                if hasattr(page, 'see') and str(nxt).startswith(str(page)):
+                    page.see(nxt)
+                if not hasattr(self, 'pad_marker'):  # the focus ring of the theme is hard to see
+                    self.pad_marker = self.tk.Frame(self.root, bg=ACCENT_HI)
+                self.pad_marker.place(in_=nxt, x=-self.px(10), y=0, width=self.px(4), relheight=1)
+                self.pad_marker.lift()
+        elif action in ('left', 'right', 'select') and widget:
+            step = -1 if action == 'left' else 1
+            if isinstance(widget, self.ttk.Combobox) and widget['values']:
+                widget.current((widget.current() + step) % len(widget['values']))
+                widget.event_generate('<<ComboboxSelected>>')
+            elif isinstance(widget, (self.ttk.Scale, self.tk.Scale)):
+                low, high = sorted((float(widget.cget('from')), float(widget.cget('to'))))
+                widget.set(min(high, max(low, float(widget.get()) + step * max(1.0, (high - low) / 20))))
+            elif action == 'select' and hasattr(widget, 'invoke'):
+                widget.invoke()
+        elif action == 'back':
+            self.show('home')
+        elif action == 'play':
+            self.play()
+        elif action == 'save' and str(self.save_button['state']) != 'disabled':
+            self.save()
+
     def show(self, name):
+        if hasattr(self, 'pad_marker'):
+            self.pad_marker.place_forget()
         for page in self.pages.values():
             page.pack_forget()
         self.pages[name].pack(fill='both', expand=True)
@@ -1796,33 +2152,46 @@ class Launcher:
         self.row(f, _('Render resolution'), self.choice(f, 'render_resolution', 'ini', self.game_resolution_options()),
                  _('Sizes with a resolution patch for this game. Wider than 16:9 keeps the HUD at 16:9.'),
                  restart=True)
+        self.row(f, _('Output resolution', 'Разрешение вывода'), self.choice(f, 'output_res', 'ini', OUTPUTS),
+                 _('From 1920x1080 up it follows Render resolution, which sets how sharp the race is; Upscaling divides that.',
+                   'От 1920x1080 и выше следует разрешению рендера, которое задаёт чёткость гонки; апскейлинг делит его.'), restart=True)
+        self.row(f, _('Texture quality'), self.choice(f, 'texture_limit', 'app', TEXTURE_LIMITS),
+                 _('Low loads the largest textures at half size or less: about 1 GB less video memory in a race. '
+                   'For graphics cards with 4 GB that crash or freeze in races.'), restart=True)
         self.check(f, 'ps4_pro', 'app', _('PS4 Pro mode (experimental)'),
                    _('The game runs as on a PS4 Pro, with its Pro graphics. Menus and a race start work; other events '
                      'are not tested yet. Turn it off if something looks wrong.'), restart=True)
         self.section(f, _('Anti-aliasing (experimental)'))
         self.check(f, 'experimental_upscaler', 'app', _('Temporal anti-aliasing'),
                    _('Off (default): the game\'s own image. On: FSR 3.1 or DLAA smooth edges at the render '
-                     'resolution (DLAA), from the game\'s own motion vectors. To compare them in the game: '
-                     'Advanced > Diagnostics > F10.'), restart=True)
-        dlss = dlss_installed()
-        self.row(f, _('Method'), self.choice(f, 'upscaler', 'ini', AA_CHOICES + ([DLSS_CHOICE] if dlss else [])),
-                 None if dlss else _('DLAA needs gow3_dlss.dll and nvngx_dlss.dll next to gow3-probe.exe.'),
+                     'resolution, from the game\'s own motion vectors, in place of the game\'s multisampling. '
+                     'The method can also be changed while playing: in-game menu (Insert / R3+L2) > Image.'),
+                   restart=True)
+        # DLAA is listed once NVIDIA's runtime is installed (the list is asked again when it opens).
+        self.row(f, _('Method'), self.choice(f, 'upscaler', 'ini',
+                                             lambda: AA_CHOICES + ([DLSS_CHOICE] if dlss_installed() else [])),
                  restart=True)
-        if dlss:
-            # Only DLAA has presets; FSR 3.1 at native size has none (its quality modes choose
-            # an upscaling ratio). The row (title, box, note) hides with another method.
-            first = self.next_row(f)
-            self.row(f, _('DLAA preset'), self.choice(f, 'dlss_preset', 'ini', DLSS_PRESETS),
-                     _('K is the driver\'s default for DLAA. M and L are the newer second-generation '
-                       'models; L costs a few percent more.'), restart=True)
-            preset_widgets = [w for r in range(first, self.next_row(f)) for w in f.grid_slaves(row=r)]
-            method = self.var('upscaler', 'ini')
+        if WINDOWS:
+            self.build_dlss_row(f)
+        self.row(f, _('Upscaling'), self.choice(f, 'preset', 'ini', UPSCALE_PRESETS),
+                 _('Draws the race at a lower resolution and scales it up with the method above: more FPS, a '
+                   'softer picture. The HUD and menus stay sharp. Off: smooth edges only, at full resolution. '
+                   'Also in the game: Insert > Image.'))
+        # Only DLAA has presets; FSR 3.1 at native size has none (its quality modes choose
+        # an upscaling ratio). The row (title, box, note) hides with another method.
+        first = self.next_row(f)
+        self.row(f, _('DLAA preset'), self.choice(f, 'dlss_preset', 'ini', DLSS_PRESETS),
+                 _('K is the driver\'s default for DLAA. M and L are the newer second-generation '
+                   'models; L costs a few percent more.'), restart=True)
+        preset_widgets = [w for r in range(first, self.next_row(f)) for w in f.grid_slaves(row=r)]
+        method = self.var('upscaler', 'ini')
 
-            def preset_visible(*_args):
-                for widget in preset_widgets:
-                    widget.grid() if method.get() == 'dlss' else widget.grid_remove()
-            method.trace_add('write', preset_visible)
-            preset_visible()
+        def preset_visible(*_args):
+            for widget in preset_widgets:
+                widget.grid() if method.get() == 'dlss' and dlss_installed() else widget.grid_remove()
+        method.trace_add('write', preset_visible)
+        self.dlss_preset_visible = preset_visible
+        preset_visible()
         # Temporal upscaling is parked until its image quality is validated.
         # self.section(f, _('Experimental'))
         # self.check(f, 'experimental_upscaler', 'app', _('Enable the upscaler (experimental)'),
@@ -1836,9 +2205,6 @@ class Launcher:
         # self.row(f, _('Quality preset', 'Пресет'), self.choice(f, 'preset', 'ini', PRESETS),
         #          _('Render scale per axis: Quality renders at 1/1.5 of the output size.',
         #            'Масштаб рендера по каждой оси: Quality рисует в 1/1.5 размера вывода.'))
-        # self.row(f, _('Output resolution', 'Разрешение вывода'), self.choice(f, 'output_res', 'ini', OUTPUTS),
-        #          _('What the upscaler produces; the HUD is drawn at this size too.',
-        #            'Что выдаёт апскейлер; интерфейс рисуется в этом же размере.'))
         # self.row(f, _('Live resolution changes', 'Смена разрешения на лету'), self.choice(f, 'live_resolution', 'ini', LIVE),
         #          _('Off: outputs other than 1080p are set by a patch at start (fastest; changing them in the '
         #            'game restarts it). On: change output and preset in the game without a restart, at a cost.',
@@ -1896,12 +2262,21 @@ class Launcher:
                                Path(self.var('user_dir', 'app').get() or DATA_DIR / 'user') / 'screenshots'))
         self.row(f, _('F12 in the game'), shots,
                  _("Saves the game's image, without the overlay, as a PNG in the screenshots folder of the saves."))
+        self.check(f, 'photo_flare', 'app', _('Lens flare in photo mode'),
+                   _("Off: no colour flare over the ship and its exhaust in the game's photo mode."),
+                   restart=True)
 
     def build_performance(self):
         f = self.scrolled_page('performance', _('Performance'), _('Frame rate and speed options.'))
         self.section(f, _('Frame rate', 'Частота кадров'), top=4)
         self.row(f, _('Frame rate limit'), self.choice(f, 'fps_limit', 'ini', FPS_LIMITS),
                  _("Unlimited: up to 240 FPS. With VSync on, your monitor's refresh rate is the highest it goes."))
+        self.check(f, 'menu_fps_cap', 'app', _('Menus at 60 FPS'),
+                   _('On: the menus and the pause menu run at 60 FPS like on PS4. Off: at the frame rate limit '
+                     '(some menu animations then run faster).'))
+        self.check(f, 'adaptive_reflections', 'app', _('Adaptive ship reflections'),
+                   _("On: while the game runs below its frame rate, your ship's reflection of the track updates "
+                     'half as often, as it does with two players. Off: always at the full rate.'))
         self.row(f, _('Frames queued'), self.choice(f, 'frames_queued', 'ini', FRAMES_QUEUED),
                  _('1 is the lowest input latency; more can raise FPS when the graphics card is the limit.'))
         self.section(f, _('Shaders'))
@@ -1909,8 +2284,9 @@ class Launcher:
                    _('Reuse saved Vulkan pipelines. Disable to compare FPS with normal compilation. '
                      'Takes effect on the next launch; saved caches are preserved.'))
         self.check(f, 'background_warmup', 'app', _('Load shader cache in the background'),
-                   _('The game opens at once and the saved shaders load while you play; a small note in the '
-                     'corner shows the progress. Switch it off to wait on the loading screen instead.'))
+                   _('On: start at once, using pipeline binaries on demand or loading shaders in the background. '
+                     'Off: wait on the loading screen for saved pipelines without disabling the binary cache. '
+                     'New areas can still need shader compilation.'))
         self.check(f, 'async_shaders', 'ini', _('Compile new shaders in the background'),
                    _('Fewer stutters in new areas: the game keeps running while new shaders compile. An object '
                      'or effect may appear a moment later. Switch it off if something stays missing.'))
@@ -1975,15 +2351,212 @@ class Launcher:
                     _('Choose the saves folder', 'Выберите папку сохранений'),
                     _('Empty: {} (shader caches are kept there too).',
                       'Пусто: {} (там же кэш шейдеров).').format(DATA_DIR / 'user'), on_change=self.refresh_status)
+        self.folder(f, 'savedata_dir', _('Save data folder (optional)'), _('Choose the save data folder'),
+                    _('Only the saves, in a folder of their own: for example a network share two PCs play '
+                      'from (not both at once). Empty: savedata in the saves folder.'), on_change=self.refresh_status)
         self.section(f, _('Saves'))
         self.build_save_backups(f)
         self.section(f, _('Language'))
         self.row(f, _('Game language', 'Язык игры'), self.choice(f, 'language', 'app',
                                                                   lambda: game_languages(self.meta_dir())))
+        name = self.ttk.Entry(f, textvariable=self.var('player_name', 'app'), width=20, validate='key',
+                              validatecommand=(self.root.register(lambda text: len(text) <= 16), '%P'))
+        self.row(f, _('Player name'), name,
+                 _('Your name in the game (profile, records). Up to 16 characters. Empty: Player.'))
+        self.note(f, _('Online, this is your name too (see the Online page).'), top=2)
+        profiles = lambda: [''] + sorted(p.name for p in (self.savedata_dir() / 'profiles').glob('*') if p.is_dir())
+        box = self.ttk.Combobox(f, textvariable=self.var('profile', 'app'), width=20, validate='key',
+                                validatecommand=(self.root.register(
+                                    lambda text: len(text) <= 32 and re.fullmatch(r'[\w -]*', text) is not None), '%P'))
+        box.configure(postcommand=lambda: box.configure(values=profiles()))
+        self.row(f, _('Profile'), box,
+                 _('Each profile has its own saves and stats. Type a new name to start one. Empty: the main saves.'))
         self.build_patches(f)
+        # scripts/menu_patches.py (#89): each digit over 3 takes an indentation space (the menu has 4).
+        self.section(f, _('In-game menu patches', 'Патчи меню игры'))
+        self.row(f, _('Eliminator target limit', 'Предел цели Eliminator'),
+                 self.slider(f, 'eliminator_limit', 600, 10000, '', store='app', step=100),
+                 _("The highest target of the Eliminator slider in the race setup (the game's own: 600 points).",
+                   'Наибольшая цель ползунка Eliminator в настройке гонки (в самой игре: 600 очков).'),
+                 restart=True)
+
+    def savedata_dir(self):
+        return Path(self.var('savedata_dir', 'app').get() or self.user_dir() / 'savedata')
 
     def user_dir(self):
         return Path(self.var('user_dir', 'app').get() or DATA_DIR / 'user')
+
+    def build_online(self):
+        """The Online switch; on, PLAY hosts or joins (scripts/online_host.py, docs/online-multiplayer.md)."""
+        tk, ttk = self.tk, self.ttk
+        f = self.scrolled_page('online', _('Online', 'Онлайн'), _('Races with other players over the internet.'))
+        enabled = self.var('online_enabled', 'app')
+        self.check(f, 'online_enabled', 'app', _('Play online', 'Играть онлайн'),
+                   _("Off: the game plays offline. On: PLAY connects it, and its ONLINE menu works."))
+        panel = ttk.Frame(f)
+        panel.grid(row=self.next_row(f), column=0, columnspan=2, sticky='we')
+        role = self.var('online_role', 'app')
+        self.row(panel, _('I want to', 'Я хочу'), self.choice(panel, 'online_role', 'app', [
+            ('host', ('Host a game', 'Создать игру')), ('join', ('Join a friend', 'Присоединиться к другу'))]))
+        name = ttk.Entry(panel, textvariable=self.var('player_name', 'app'), width=20, validate='key',
+                         validatecommand=(self.root.register(lambda text: len(text) <= 16), '%P'))
+        self.row(panel, _('Player name'), name)
+        seen_as = ttk.Label(panel, style='Muted.TLabel')
+        seen_as.grid(row=self.next_row(panel), column=0, columnspan=2, sticky='w', pady=self.px((1, 2)))
+
+        def show_name(*_args):
+            seen_as.configure(text=_('Other players see you as {}. This is the Player name of the Game page too.')
+                              .format(online_host.online_name(self.var('player_name', 'app').get())))
+        self.var('player_name', 'app').trace_add('write', show_name)
+        show_name()
+        join = ttk.Frame(panel)
+        join.grid(row=self.next_row(panel), column=0, columnspan=2, sticky='we')
+        code = ttk.Entry(join, textvariable=self.var('online_code', 'app'), width=24)
+        self.row(join, _('Join code', 'Код игры'), code,
+                 _("Your friend sees this code when they host. A server's address works here too."))
+        self.note(join, _("Press PLAY. Then in the game: ONLINE, Join Game."), top=12)
+        host = ttk.Frame(panel)
+        host.grid(row=self.next_row(panel), column=0, columnspan=2, sticky='we')
+        self.note(host, _("Press PLAY. Your router's port opens automatically and your join code appears here, "
+                          "copied and ready to send. Then in the game: ONLINE, Create Game."), top=12)
+        self.host_panel = ttk.Frame(host)
+        self.host_panel.grid(row=self.next_row(host), column=0, columnspan=2, sticky='w', pady=self.px((12, 0)))
+        self.host_code = tk.Label(self.host_panel, text='', bg=PANEL, fg=ACCENT_HI, font=self.heading_font(22, bold=True))
+        self.host_code.grid(row=0, column=0, sticky='w')
+        ttk.Button(self.host_panel, text=_('Copy', 'Копировать'), command=self.copy_host_code).grid(
+            row=0, column=1, padx=self.px((14, 0)))
+        self.host_state = ttk.Label(self.host_panel, style='Muted.TLabel', wraplength=self.px(680), justify='left')
+        self.host_state.grid(row=1, column=0, columnspan=2, sticky='w', pady=self.px((6, 0)))
+        port = ttk.Entry(host, textvariable=self.var('online_port', 'app'), width=8, validate='key',
+                         validatecommand=(self.root.register(lambda text: text.isdigit() and len(text) <= 5 or text == ''), '%P'))
+        self.row(host, _('Port'), port, _('7788 unless you have a reason to change it. The next free one is taken '
+                                          'when it is in use.'))
+        self.note(host, _("The code holds your internet address: send it to people you want to play with. Hosting "
+                          "asks a public STUN server what that address is. If Windows asks about the firewall, "
+                          "allow access."), top=12)
+        self.host_panel.grid_remove()  # after the rows below it: a hidden row would be given away
+
+        def show_parts(*_args):
+            if enabled.get():
+                panel.grid()
+            else:
+                panel.grid_remove()
+            if role.get() == 'join':
+                join.grid()
+                host.grid_remove()
+            else:
+                host.grid()
+                join.grid_remove()
+        show_parts()
+
+        def changed(*_args):
+            show_parts()
+            self.refresh_status()
+        enabled.trace_add('write', changed)
+        role.trace_add('write', changed)
+
+    def online_summary(self):
+        """The status bar's word on what PLAY will do."""
+        enabled, role = self.vars.get('online_enabled'), self.vars.get('online_role')
+        if not enabled or not enabled.get():
+            return ''
+        return ' · ' + (_('Online: joining a friend') if role and role.get() == 'join' else _('Online: hosting'))
+
+    def prepare_online(self):
+        """On the way to launch_game: the network part of PLAY, off the Tk thread."""
+        settings = self.app
+        if settings.get('online_role') == 'join':
+            try:
+                candidates = online_host.join_candidates(settings.get('online_code', ''))
+            except ValueError:
+                self.messagebox.showerror(APP_NAME, _("Enter the join code your friend sees when they host. "
+                                                      "Check it for typos."))
+                self.show('online')
+                return
+            work = lambda: online_host.reachable_address(candidates)
+            done = lambda address: self.joined(candidates, address)
+            text = _('Looking for the host…')
+        else:
+            try:
+                port = int(settings.get('online_port') or online_host.DEFAULT_PORT)
+            except ValueError:
+                port = online_host.DEFAULT_PORT
+            work = online_host.HostSession(port).start
+            done = self.hosted
+            text = _('Opening the port on your router…')
+        self.online_busy = True
+        self.play_button.configure(state='disabled')
+        self.status.configure(text=text, fg=TEXT)
+
+        def run():
+            try:
+                result = work()
+            except OSError as error:
+                self.ui_calls.put(lambda failure=error: self.online_failed(failure))
+                return
+            self.ui_calls.put(lambda: done(result))
+        threading.Thread(target=run, name='Online setup', daemon=True).start()
+
+    def online_failed(self, error):
+        self.online_busy = False
+        self.refresh_status()
+        self.messagebox.showerror(APP_NAME, _('Could not set up online play: {}').format(error))
+
+    def joined(self, candidates, address):
+        self.online_busy = False
+        if not address:
+            if not self.messagebox.askyesno(APP_NAME, _(
+                    "The host does not answer yet. Their game has to be running, with this code.\n\n"
+                    "Start the game anyway? You can join from its ONLINE menu once they are ready.")):
+                self.refresh_status()
+                return
+            address = candidates[-1]
+        self.launch_game({**self.app, 'online_address': address})
+
+    def hosted(self, session):
+        self.online_busy = False
+        self.launch_game({**self.app, 'online_host_port': session.port}, session)
+
+    def show_hosting(self, session):
+        self.host_session = session
+        self.copy_host_code()
+        self.status.configure(text=_('Hosting. Your join code is {} (copied).').format(session.code), fg=TEXT)
+        self.append(_('Hosting on port {}. Join code: {}').format(session.port, session.code) + '\n')
+        if session.router_error:
+            self.append(_('Router: {}').format(session.router_error) + '\n')
+        if not hasattr(self, 'host_panel'):
+            return
+        self.host_code.configure(text=session.code)
+        self.host_state.configure(text={
+            online_host.OPEN: _('Your router opened port {port} automatically. Friends can join with this code.'),
+            online_host.MANUAL: _("Your router did not open the port automatically. Turn on UPnP in its settings, or "
+                                  "forward port {port} (TCP and UDP) to this PC, {lan}. Until then only players on "
+                                  "your network can join."),
+            online_host.SHARED: _("Players outside your home cannot reach you: your internet provider or a second "
+                                  "router shares one public address, so no port can be opened here. Players on your "
+                                  "network can join. Ask your provider for a public address, let a friend host, or "
+                                  "use a virtual LAN such as Tailscale."),
+            online_host.LAN_ONLY: _('No internet address was found. Only players on your network can join.'),
+        }[session.status].format(port=session.port, lan=session.lan_ip))
+        self.host_panel.grid()
+        self.show('online')
+
+    def copy_host_code(self):
+        session = getattr(self, 'host_session', None)
+        if session and session.code:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(session.code)
+            self.root.update_idletasks()
+
+    def stop_hosting(self):
+        """The game ended: the router's port closes, and so does the code."""
+        session = getattr(self, 'host_session', None)
+        self.host_session = None
+        if session:
+            threading.Thread(target=session.close, name='UPnP close', daemon=False).start()
+        if hasattr(self, 'host_panel'):
+            self.host_panel.grid_remove()
+
 
     def build_music_page(self):
         """Your own music: a guide, the folder, the switches (gow3.ini, also in the in-game Music tab)
@@ -1996,14 +2569,23 @@ class Launcher:
                        "effects stay. Set how loud with Music volume below.\n"
                        "3. In the game, press Insert (or R3 + L2) and open the Music tab: pick a song, skip to the "
                        "next one or turn shuffle off."), top=8)
+        self.note(f, _("Menu songs: put the songs for the menus in a subfolder named menu. They play only in the "
+                       "menus, and the other songs play in races."), top=8)
+        self.note(f, _("Mode songs: songs in subfolders named zone, eliminator or detonator play only in that "
+                       "mode. A mode without its own folder plays the race songs."), top=4)
         self.section(f, _('Settings'))
         self.folder(f, 'music_dir', _('Music folder'), _('Choose your music folder'),
                     _('Empty: the music folder next to your saves.'), on_change=self.refresh_music)
         self.check(f, 'music', 'ini', _('Play my music'), _("Off: the game's own music, even with songs in the folder."))
         self.check(f, 'music_shuffle', 'ini', _('Shuffle'), _('Off: the songs play in the order of the list below.'))
+        self.check(f, 'music_continue', 'ini', _('Keep the song between races'),
+                   _('Each race goes on with the song that was playing. Off: a new song starts with each race.'))
         self.row(f, _('Music volume'), self.slider(f, 'music_volume', 0, 200, '%'),
                  _("100%: about as loud as the game's own music. Each song is leveled, so quiet and loud songs "
                    "sound alike."))
+        self.row(f, _('Game music volume'), self.slider(f, 'game_music_volume', 0, 300, '%'),
+                 _("The game's own music, on top of its Audio Options. Above 100% it is louder than the game "
+                   "allows; very loud parts may clip."))
         head = ttk.Frame(f)
         head.grid(row=self.next_row(f), column=0, columnspan=2, sticky='we', pady=self.px((24, 0)))
         ttk.Label(head, text=_('Songs').upper(), style='Section.TLabel').pack(side='left')
@@ -2059,7 +2641,7 @@ class Launcher:
                                                     'The current saves are backed up first.').format(name)):
             return
         try:
-            safety = save_backup.restore(self.user_dir(), name)
+            safety = save_backup.restore(self.user_dir(), name, savedata=self.var('savedata_dir', 'app').get() or None)
         except (OSError, ValueError) as error:
             self.messagebox.showerror(APP_NAME, _('Could not restore: {}').format(error))
             return
@@ -2218,7 +2800,8 @@ class Launcher:
         for value, label in CONTROL_DEVICES:
             ttk.Radiobutton(devices, text=_(label), value=value, variable=self.device,
                             command=choose_device).pack(side='left', padx=self.px((0, 18)))
-        self.row(page, _('Device'), devices)
+        self.row(page, _('Device'), devices,
+                 _('Split-screen: a second gamepad plays as player 2, with the same gamepad mapping.'))
 
         # Keyboard & mouse: one table for the keys and the mouse, with its own actions.
         f = self.key_section = ttk.Frame(page)
@@ -2261,7 +2844,14 @@ class Launcher:
             ttk.Radiobutton(names, text=PAD_STYLE_NAMES[value], value=value, variable=self.pad_style,
                             command=self.relabel_pad_controls).pack(side='left', padx=self.px((0, 14)))
         self.row(f, _('Controller type'), names)
+        self.row(f, _('Gamepad'), self.choice(f, 'gamepad_number', 'app', GAMEPAD_NUMBERS),
+                 _('With several gamepads connected: the one that plays. Player 2 gets the next free one.'))
+        self.row(f, _('Button layout'), self.choice(f, 'pad_scheme', 'app', PAD_SCHEMES),
+                 _("Racer (as on the PS Vita): R2 accelerates, L2 brakes, Square with left or right is that air "
+                   "brake, Cross fires, Circle absorbs. Keep the game's own controls at their default with it."),
+                 restart=True)
         self.row(f, _('Vibration'), self.slider(f, 'vibration', 0, 100, '%'), _("Strength of the gamepad's vibration; 0% turns it off."))
+        self.row(f, _('Stick deadzone'), self.slider(f, 'stick_deadzone', 0, 50, '%'), _("Ignores small stick movements, for a stick that drifts. 0% keeps the game's own."))
         table = mapping_table(f)
         for r, (button, _key, pad) in enumerate(CONTROLS, start=1):
             game_button(table, r, button)
@@ -2271,7 +2861,7 @@ class Launcher:
             pad_icon = icon_canvas(table)
             pad_icon.grid(row=r, column=2, sticky='w', padx=self.px((0, 6)))
             self.pad_icons[button] = pad_icon
-            if pad:
+            if pad is not None:
                 box = ttk.Combobox(table, state='readonly', values=list(labels.values()),
                                    width=max(22, *(len(l) + 2 for l in labels.values())))
                 box.set(labels.get(pad_name, pad_name))
@@ -2290,6 +2880,8 @@ class Launcher:
         self.note(f, _('L2/R2 stay on the triggers. Touchpad right opens the game\'s pause menu; Touchpad left '
                        '(photo mode) is L1 + Touchpad right. R3+L2 always opens the port\'s menu. '
                        'Applied when the game starts.'))
+        self.note(f, _('Side-shift / barrel roll: press it with an airbrake held to side-shift that way, or while '
+                       'steering left or right in the air to barrel-roll. The double taps of the game still work.'))
         ttk.Button(f, text=_('Reset gamepad to defaults'), command=lambda: self.reset_controls('pad')).grid(
             row=self.next_row(f), column=0, sticky='w', pady=self.px((14, 0)))
         self.show_device(fit=False)
@@ -2376,7 +2968,10 @@ class Launcher:
 
     def draw_pad_icon(self, button):
         """The gamepad column's icon of a game button, in the chosen style (L2/R2: the triggers)."""
-        name = self.control_vars['pad'][button].get() or button_icons.GAME_BUTTONS[button]
+        name = self.control_vars['pad'][button].get() or button_icons.GAME_BUTTONS.get(button)
+        if not name:  # the trick button has no gamepad button until one is chosen (#207)
+            self.pad_icons[button].delete('all')
+            return
         button_icons.draw(self.pad_icons[button], name, self.pad_style.get(), self.px(28))
 
     def pad_name(self, label):
@@ -2437,16 +3032,19 @@ class Launcher:
         self.row(f, _('GUI Scale'), self.choice(f, 'ui_scale', 'app', UI_SCALES),
                  _('For launcher only. Applies after Save.'))
         self.check(f, 'close_on_play', 'app', _('Close the launcher when the game starts', 'Закрывать лаунчер при запуске игры'))
-        if WINDOWS:
+        self.check(f, 'discord_rpc', 'app', _('Show Discord Rich Presence', 'Показывать Discord Rich Presence'),
+                   _('Shows the game, the track and mode you play, your online lobby and the time played on your '
+                     'Discord profile, as "Playing WipEout: Omega Collection" with its game page.',
+                     'Показывает в вашем профиле Discord игру, трассу и режим, онлайн-лобби и время в игре: '
+                     '«Playing WipEout: Omega Collection» со страницей игры.'))
+        if can_update():
             self.check(f, 'update_popup', 'app', _('Check for updates when the launcher opens',
                                                     'Проверять обновления при открытии лаунчера'))
+        self.check(f, 'launcher_gamepad', 'app', _('Control the launcher with a gamepad'),
+                   _('Off: the controller does nothing in the launcher (for example while it moves the mouse).'))
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=self.px((10, 0)))
-        if WINDOWS:
-            ttk.Button(holder, text=_('Check for updates', 'Проверить обновления'),
-                       command=lambda: threading.Thread(target=self.check_update, args=(True,), daemon=True).start()
-                       ).pack(side='left')
-        ttk.Button(holder, text=_('Desktop shortcut', 'Ярлык на рабочем столе'), command=self.shortcut).pack(side='left', padx=self.px(6))
+        ttk.Button(holder, text=_('Desktop shortcut', 'Ярлык на рабочем столе'), command=self.shortcut).pack(side='left', padx=self.px((0, 6)))
         ttk.Button(holder, text=_('Add to Steam'), command=self.add_to_steam).pack(side='left')
         ttk.Label(holder, text=f'v{APP_VERSION}', style='Muted.TLabel').pack(side='left', padx=self.px(10))
         if not WINDOWS:
@@ -2504,6 +3102,7 @@ class Launcher:
         buttons.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=self.px((6, 8)))
         ttk.Button(buttons, text=_('Copy', 'Копировать'), command=self.copy_log).pack(side='left')
         ttk.Button(buttons, text=_('Clear', 'Очистить'), command=lambda: self.set_log('')).pack(side='left', padx=self.px(6))
+        ttk.Button(buttons, text=_('Show the log file'), command=self.show_log_file).pack(side='left')
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='we')
         self.log = tk.Text(holder, wrap='none', height=18, bg='#080a0c', fg='#cfc6bc', insertbackground=TEXT,
@@ -2533,7 +3132,7 @@ class Launcher:
         info = game_info(self.meta_dir())
         if not self.process:
             self.play_button.configure(text=_('PLAY', 'ИГРАТЬ'), state='normal' if info else 'disabled')
-            self.status.configure(text=self.summary() if info else _('Choose the game folder first.',
+            self.status.configure(text=self.summary() + self.online_summary() if info else _('Choose the game folder first.',
                                                                      'Сначала выберите папку игры.'), fg=MUTED)
 
     def summary(self):
@@ -2548,7 +3147,10 @@ class Launcher:
         text = _('{} · {} patches').format(resolution, len(names))
         # Which patches the game's eboot.bin had is known once the game has started (patches.py).
         status = patch_status(DATA_DIR / 'out')
-        if status and status.get('skipped'):
+        if status and status.get('skipped') and not status.get('applied'):
+            # None fit: an eboot.bin without its update (#39, #54).
+            text += ' · ' + _('no patch fits your eboot.bin: add the game update (Game > Update folder)')
+        elif status and status.get('skipped'):
             text += ' · ' + _('{} not found in this eboot.bin at the last start (see Log)').format(len(status['skipped']))
         return text
 
@@ -2942,7 +3544,7 @@ class Launcher:
         threading.Thread(target=work, daemon=True).start()
 
     def play(self):
-        if self.process or getattr(self, 'copying_system_files', False):
+        if self.process or getattr(self, 'copying_system_files', False) or getattr(self, 'online_busy', False):
             return
         if not self.collect():
             return
@@ -2973,26 +3575,37 @@ class Launcher:
                                       .format(update_dir, '\n'.join(describe_missing(missing))))
             self.show('game')
             return
+        if self.app.get('online_enabled'):
+            self.prepare_online()  # goes on in launch_game
+        else:
+            self.launch_game(self.app)
+
+    def launch_game(self, settings, session=None):
         self.set_log('')
         self.exit_hint = None
         self.hidden_for_game = False
         # The same last_run.log as --play, so a report from the PLAY button has the file too.
         run_log = open_play_log(self.app)
         try:
-            self.process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(self.app),
+            self.process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(settings),
                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, creationflags=NO_WINDOW, **NEW_GROUP)
         except OSError as error:
             run_log.close()
             self.append(_('Could not start: {}', 'Не удалось запустить: {}').format(error) + '\n')
             self.process = None
+            if session:
+                session.close()
+            self.refresh_status()
             return
         self.job = GameJob(self.process)
         threading.Thread(target=self.read_output, args=(self.process, run_log), daemon=True).start()
         self.play_button.configure(text=_('RUNNING'), state='disabled')
         self.status.configure(text=_('Preparing the game; it opens in its own window…',
                                      'Подготовка игры; она откроется в своём окне…'), fg=TEXT)
-        if self.app.get('close_on_play'):
+        if session:
+            self.show_hosting(session)  # the code stays in view: no hiding for the game
+        elif self.app.get('close_on_play'):
             self.root.after(5000, self.hide_for_game, self.process)
 
     def hide_for_game(self, process):
@@ -3032,12 +3645,18 @@ class Launcher:
                     if getattr(self, 'exit_hint', None):
                         self.append(self.exit_hint + '\n')
                     self.process = None
+                    self.stop_hosting()
                     if self.job:
                         self.job.close()
                     if getattr(self, 'hidden_for_game', False):
-                        self.root.destroy()
-                        return
+                        if item[0] == 0:
+                            self.root.destroy()
+                            return
+                        self.hidden_for_game = False
+                        self.root.deiconify()
                     self.refresh_status()
+                    if item[0] != 0:
+                        self.root.after(0, self.report_crash, item[0])
                 else:
                     self.exit_hint = exit_hint(item) or getattr(self, 'exit_hint', None)
                     if 'Entering original x86-64 code' in item:
@@ -3068,9 +3687,29 @@ class Launcher:
         self.root.clipboard_clear()
         self.root.clipboard_append(self.log.get('1.0', 'end'))
 
+    def show_log_file(self):
+        """Opens the folder of last_run.log with the file selected, for a bug report."""
+        path = run_log_path(self.app)
+        if WINDOWS and path.is_file():
+            subprocess.Popen(['explorer', '/select,', str(path)])
+        else:
+            self.open_path(str(path.parent))
+
+    def report_crash(self, code):
+        # Players could not find last_run.log: after a crash, say where it is.
+        text = _('The game stopped because of an error (code {}).').format(code)
+        if getattr(self, 'exit_hint', None):
+            text += '\n\n' + self.exit_hint
+        text += '\n\n' + _('To report it, attach this file to your GitHub issue:\n{}\n\nShow the file now?').format(
+            run_log_path(self.app))
+        if self.messagebox.askyesno(APP_NAME, text, icon='warning'):
+            self.show_log_file()
+
     def open_path(self, path, key=None):
         if key == 'user_dir' and not path:
             path = DATA_DIR / 'user'
+        elif key == 'savedata_dir' and not path:
+            path = self.user_dir() / 'savedata'
         elif key == 'mods_dir' and not path:
             path = DATA_DIR / 'mods'
         elif key == 'music_dir' and not path:
@@ -3189,6 +3828,77 @@ class Launcher:
         win.lift()
         now.focus_set()
 
+    def build_dlss_row(self, f):
+        """NVIDIA DLSS on the Graphics page: installed, a download button, or why it is not offered."""
+        holder = self.ttk.Frame(f)
+        self.dlss_button = self.ttk.Button(holder, text=_('Download NVIDIA DLSS ({} MB)').format(DLSS_RUNTIME_MB),
+                                           command=self.download_dlss)
+        self.dlss_status = self.ttk.Label(holder, text='', style='Muted.TLabel')
+        self.dlss_status.pack(side='right', padx=self.px((8, 0)))
+        self.row(f, _('NVIDIA DLSS'), holder,
+                 _("DLAA needs NVIDIA's DLSS file, nvngx_dlss.dll. The launcher downloads it from NVIDIA's own "
+                   'GitHub (DLSS {}) and checks it before using it. Needs an NVIDIA RTX graphics card.').format(
+                     DLSS_SDK_VERSION))
+        self.refresh_dlss_row()
+
+    def refresh_dlss_row(self, busy=None):
+        """The DLSS row's button and status for the current state; busy: a download message."""
+        if busy is not None:
+            self.dlss_button.configure(state='disabled')
+            self.dlss_status.configure(text=busy)
+            return
+        if not dlss_bridge_installed():
+            offer, text = False, _('Not in this build.')
+        elif dlss_installed():
+            offer, text = False, _('Installed.')
+        elif rtx_gpu(list_gpus()) is False:
+            offer, text = False, _('No NVIDIA RTX graphics card found.')
+        else:
+            offer, text = True, ''
+        self.dlss_button.configure(state='normal')
+        if offer:
+            self.dlss_button.pack(side='left')
+        else:
+            self.dlss_button.pack_forget()
+        self.dlss_status.configure(text=text)
+
+    def download_dlss(self):
+        """Downloads NVIDIA's runtime (three tries on a network drop), then selects DLAA."""
+        directory = dlss_directory()
+        self.refresh_dlss_row(_('Downloading…'))
+
+        def progress(done, total):
+            text = _('Downloading… {} of {} MB').format(done >> 20, (total or DLSS_RUNTIME_MB << 20) >> 20)
+            self.ui_calls.put(lambda t=text: self.refresh_dlss_row(t))
+
+        def work():
+            error = None
+            for _attempt in range(3):
+                try:
+                    download_dlss_runtime(directory, progress)
+                    error = None
+                    break
+                except ValueError as failure:  # a wrong file: trying again would not help
+                    error = failure
+                    break
+                except OSError as failure:
+                    error = failure
+                    time.sleep(3)
+
+            def finished(error=error):
+                self.refresh_dlss_row()
+                if error:
+                    self.messagebox.showerror(APP_NAME, _('Could not download NVIDIA DLSS: {}').format(error))
+                    return
+                # DLAA needs the temporal anti-aliasing switch: both are set, Save keeps them.
+                self.var('experimental_upscaler', 'app').set(True)
+                self.var('upscaler', 'ini').set('dlss')
+                self.dlss_preset_visible()
+                self.messagebox.showinfo(APP_NAME, _('NVIDIA DLSS is installed. Temporal anti-aliasing is on with '
+                                                     'DLAA: click Save, then PLAY.'))
+            self.ui_calls.put(finished)
+        threading.Thread(target=work, daemon=True).start()
+
     def update_progress(self, text=None, percent=0):
         """The download's progress in the pop-up and the side box; None: back to the offer."""
         busy = text is not None
@@ -3213,9 +3923,19 @@ class Launcher:
         if self.process:
             self.messagebox.showinfo(APP_NAME, _('Close the game before updating.', 'Закройте игру перед обновлением.'))
             return
-        if not FROZEN or not url:  # a source tree updates with git; a release without its zip: its page
+        if not FROZEN or not can_update():  # a source tree updates with git
             open_url(page)
             return
+        if not url:
+            # The release was offered before its zip was built (#61): ask GitHub again.
+            try:
+                version, url, page, _notes = latest_release()
+            except (OSError, ValueError, KeyError):
+                url = None
+            if not url:
+                self.messagebox.showinfo(APP_NAME, _('The download of version {} is still being prepared. '
+                                                     'Try again in a few minutes.').format(version))
+                return
         self.update_progress(_('Downloading version {}…').format(version))
 
         def work():
@@ -3223,17 +3943,27 @@ class Launcher:
                 shutil.rmtree(UPDATE_DIR, ignore_errors=True)
                 UPDATE_DIR.mkdir(parents=True, exist_ok=True)
                 archive = UPDATE_DIR / 'update.zip'
-                request = urllib.request.Request(url, headers={'User-Agent': 'wipeout-launcher'})
-                with urllib.request.urlopen(request, timeout=60) as response, open(archive, 'wb') as out:
-                    total, done, shown = int(response.headers.get('Content-Length') or 0), 0, -1
-                    while chunk := response.read(1 << 20):
-                        out.write(chunk)
-                        done += len(chunk)
-                        percent = done * 100 // total if total else 0
-                        if percent != shown:
-                            shown = percent
-                            text = _('Downloading version {}… {} of {} MB').format(version, done >> 20, total >> 20)
-                            self.ui_calls.put(lambda t=text, p=percent: self.update_progress(t, p))
+
+                def progress(done, total):
+                    text = _('Downloading version {}… {} of {} MB').format(version, done >> 20, total >> 20)
+                    self.ui_calls.put(lambda t=text, p=done * 100 // total if total else 0: self.update_progress(t, p))
+                appimage = None if WINDOWS else Path(os.environ['APPIMAGE'])
+                if appimage:  # Knack #28: the new AppImage next to the running one, then in its place
+                    archive = appimage.with_name(appimage.name + '.part')
+                for attempt in range(3):  # #191: a dropped connection left a cut zip ("not a zip file")
+                    try:
+                        download_update(url, archive, progress, whole_zip=not appimage)
+                        break
+                    except OSError:
+                        if attempt == 2:
+                            raise
+                        time.sleep(3)
+                if appimage:
+                    install_appimage(archive, appimage)
+                    self.ui_calls.put(lambda: self.update_progress(
+                        _('Installing… the launcher opens again in a few seconds.'), 100))
+                    self.ui_calls.put(lambda: self.root.after(1500, self.root.destroy))
+                    return
                 self.ui_calls.put(lambda: self.update_progress(_('Unpacking…'), 100))
                 with zipfile.ZipFile(archive) as package:
                     package.extractall(UPDATE_DIR / 'new')
@@ -3337,6 +4067,9 @@ class Launcher:
     def close(self):
         if not self.collect():
             return
+        with contextlib.suppress(OSError, self.tk.TclError):
+            if self.root.state() == 'normal':
+                WINDOW_POSITION.write_text(json.dumps({'x': self.root.winfo_x(), 'y': self.root.winfo_y()}))
         self.root.destroy()
 
 
@@ -3417,6 +4150,11 @@ def exit_hint(line):
                  'Windows page file grow (for example 16384 MB initial, 32768 MB maximum), and start again.',
                  'Windows не смог выделить память для игры. Закройте другие программы или дайте файлу '
                  'подкачки Windows расти (например, 16384 МБ исходный, 32768 МБ максимальный) и запустите снова.')
+    if 'ErrorOutOfDeviceMemory' in line:
+        return _('The graphics card ran out of video memory. Choose a lower Graphics > Render resolution '
+                 '(900p or 720p), turn off PS4 Pro mode, and close other programs.',
+                 'Видеокарте не хватило видеопамяти. Выберите меньшее значение в «Графика > Разрешение '
+                 'рендера» (900p или 720p), выключите режим PS4 Pro и закройте другие программы.')
     if 'guest raised debug exception code=0xa0020001' in line:
         return _('The game stopped while reading its files: the game dump may be incomplete. Extract the pkg '
                  'again and check that the game folder is about 40 GB.',
@@ -3432,10 +4170,41 @@ def _close_quietly(log):
         pass
 
 
+def write_deck_defaults():
+    """The Steam Deck's output default (load_ini) written into gow3.ini when it has no value: the
+    game reads the file itself, and --play never opens the window whose Play and Save write it."""
+    if not steam_deck():
+        return
+    values, lines = load_ini()
+    keys = {line.split('=', 1)[0].strip() for line in lines if '=' in line and not line.lstrip().startswith('#')}
+    if 'output_res' not in keys:
+        save_ini({'output_res': values['output_res']}, lines)
+
+
+def online_ready_settings(settings):
+    """--play with the Online switch on: the same work as the window's PLAY, without questions. The
+    session closes the router's port at exit (online_host.py)."""
+    if not settings.get('online_enabled'):
+        return settings
+    try:
+        if settings.get('online_role') == 'join':
+            candidates = online_host.join_candidates(settings.get('online_code', ''))
+            return {**settings, 'online_address': online_host.reachable_address(candidates) or candidates[-1]}
+        session = online_host.HostSession(int(settings.get('online_port') or online_host.DEFAULT_PORT)).start()
+        print(f'Hosting on port {session.port}. Join code: {session.code} ({session.status})', flush=True)
+        return {**settings, 'online_host_port': session.port}
+    except (OSError, ValueError) as error:
+        print(f'Online play is not set up: {error}', flush=True)
+        return settings
+
+
+
 def play_without_window(settings):
     """--play: the game with the saved settings (shortcuts, Steam). Output goes to the console
     when there is one and to <saves folder>/last_run.log."""
     attach_stdio()
+    write_deck_defaults()
+    settings = online_ready_settings(settings)
     with open_run_log(settings) as log:
         process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(settings),
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -3468,9 +4237,34 @@ def latest_release():
     with urllib.request.urlopen(request, timeout=15) as response:
         release = json.load(response)
     version = '.'.join(re.findall(r'\d+', release['tag_name']))
+    kind = '.zip' if WINDOWS else '.appimage'  # Linux: the AppImage that replaces the running one
     url = next((asset['browser_download_url'] for asset in release.get('assets', [])
-                if asset.get('name', '').lower().endswith('.zip')), None)
+                if asset.get('name', '').lower().endswith(kind)), None)
     return version, url, release.get('html_url') or RELEASES_PAGE, whats_new(release.get('body') or '')
+
+
+def download_update(url, archive, progress=None, opener=urllib.request.urlopen, whole_zip=True):
+    """Downloads the release zip to `archive`; progress(done, total) per MiB. Raises OSError when
+    the connection ends early or the file is not a whole zip (#191)."""
+    request = urllib.request.Request(url, headers={'User-Agent': 'wipeout-launcher'})
+    with opener(request, timeout=60) as response, open(archive, 'wb') as out:
+        total, done, shown = int(response.headers.get('Content-Length') or 0), 0, -1
+        while chunk := response.read(1 << 20):
+            out.write(chunk)
+            done += len(chunk)
+            if progress and done >> 20 != shown:
+                shown = done >> 20
+                progress(done, total)
+    if (total and done != total) or (whole_zip and not zipfile.is_zipfile(archive)):
+        raise OSError(f'the download stopped early ({done >> 20} of {total >> 20} MB)')
+
+
+def install_appimage(new, running):
+    """Linux: the downloaded AppImage takes the running one's place (the running launcher keeps its
+    open copy) and starts; the old one exits."""
+    os.chmod(new, 0o755)
+    os.replace(new, running)
+    subprocess.Popen([str(running)], env=host_environment(), stdin=subprocess.DEVNULL, start_new_session=True)
 
 
 def install_update(target, wait_pid):

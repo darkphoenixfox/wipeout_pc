@@ -272,6 +272,16 @@ class SignatureTests(unittest.TestCase):
         self.assertEqual(patch_requirements(GOW3, ['Frame Rate Patch - 120 FPS'], '01.02'), (None, 120))
         self.assertEqual(patch_requirements(GOW3, [], '01.02'), (None, None))
 
+    def test_native_4k_grows_the_pro_heap_only_in_pro_mode(self):
+        # #184: the Pro heap table (0x86bb80) goes 4736 -> 5248 MB; the pool follows only in Pro mode.
+        native = ['Native 4K rendering (no checkerboard)']
+        self.assertEqual(patch_requirements(WIPEOUT, native, '01.00'), (None, None))
+        self.assertEqual(patch_requirements(WIPEOUT, native, '01.00', neo=True), (5056 + 1024, None))
+        self.assertEqual(patch_requirements(WIPEOUT, native + ['Resolution Patch - 4K'], '01.00'),
+                         (5056 + 1024, None))
+        writes = dict(compile_patches(WIPEOUT, native + ['Resolution Patch - 4K'], '01.00', SEGMENTS))
+        self.assertEqual(writes[0x86bb80], bytes.fromhex('0000004801000000'))  # Pro: 5248 MB
+        self.assertEqual(writes[0x86bb60], bytes.fromhex('0000004801000000'))  # PS4: 5248 MB (4K patch)
 
 
 class ModPatchTests(unittest.TestCase):
@@ -420,28 +430,114 @@ class HalfResolutionTests(unittest.TestCase):
         self.assertEqual(game_profile('CUSA05670')[1], WIPEOUT)
         names = [m.get('Name') for m in ET.parse(WIPEOUT).getroot().iter('Metadata')]
         self.assertEqual(names, ['Resolution Patch - 2560x1080', 'Resolution Patch - 5120x2160',
-                                 'Resolution Patch - 1440p', 'Resolution Patch - 4K', 'Resolution Patch - 3440x1440',
-                                 'Resolution Patch - 5120x1440', 'Resolution Patch - 3840x1600',
-                                 'Resolution Patch - 1440x1080', 'Resolution Patch - 1920x1440',
-                                 'Resolution Patch - 2048x1536', 'Resolution Patch - 2560x1920',
+                                 'Resolution Patch - 720p', 'Resolution Patch - 900p',
+                                 'Resolution Patch - 1440p', 'Resolution Patch - 4K', 'Resolution Patch - 5120x2880',
+                                 'Resolution Patch - 7680x4320', 'Resolution Patch - 3440x1440',
+                                 'Resolution Patch - 1920x1200', 'Resolution Patch - 2560x1600', 'Resolution Patch - 2880x1800',
+                                 'Resolution Patch - 1920x1440',
+                                 'Resolution Patch - 3840x1600', 'Resolution Patch - 5120x1440',
+                                 'Resolution Patch - 1440x1080', 'Resolution Patch - 2048x1536',
+                                 'Resolution Patch - 2560x1920',
                                  'Native 4K rendering (no checkerboard)',
-                                 'Bug Fix - Startup Hang', 'Cheat - Unlock all HD and Fury events',
-                                 'Cheat - Top rank in 2048', 'Cheat - Unlock all ships'])
+                                 'Skip the autosave notice', 'Bug Fix - Startup Hang', 'Bug Fix - Effects above 60 FPS', 'Bug Fix - Engine trail above 60 FPS',
+                                 'Bug Fix - Zone crash above 60 FPS', 'Bug Fix - Zone points above 60 FPS',
+                                 'Bug Fix - Model slots', 'Cheat - Unlock all HD and Fury events',
+                                 'Cheat - Top rank in 2048', 'Cheat - Unlock all ships',
+                                 'Cheat - Van Uber team (owned DLC)', 'Cheat - VR ships outside VR'])
         # Every resolution patch is one the in-game menu shows (GOW3_ALLOWED_RESOLUTIONS).
+        import game_profiles
         allowed = game_profiles.PROFILES['CUSA07671']['env']['GOW3_ALLOWED_RESOLUTIONS'].split(';')
         self.assertEqual(sorted(n.split(' - ')[1] for n in names if n.startswith('Resolution Patch')),
                          sorted(a for a in allowed if a != 'native'))
         # The resolution patches stay off until a resolution is chosen; native 4K rendering is on.
         self.assertEqual(selected_patches(WIPEOUT, '01.00', ''),
-                         ['Native 4K rendering (no checkerboard)', 'Bug Fix - Startup Hang'])
-        self.assertTrue(compile_patches(WIPEOUT, names[1:], '01.00', SEGMENTS))
+                         ['Native 4K rendering (no checkerboard)', 'Bug Fix - Startup Hang',
+                          'Bug Fix - Effects above 60 FPS', 'Bug Fix - Engine trail above 60 FPS',
+                          'Bug Fix - Zone crash above 60 FPS', 'Bug Fix - Zone points above 60 FPS',
+                          'Bug Fix - Model slots'])
+        # The model slots fix needs the game's code (test_wipeout_model_slots_move_to_the_reserve).
+        self.assertTrue(compile_patches(WIPEOUT, [n for n in names[1:] if n != 'Bug Fix - Model slots'],
+                                        '01.00', SEGMENTS))
+        # FSR 3.1 and DLAA read the game's motion and run before its first post pass, in both
+        # regions (#85: without them on the EU build, Temporal AA only turned multisampling off).
+        import game_profiles
+        for title in ('CUSA07671', 'CUSA05670'):
+            env = game_profiles.PROFILES[title]['env']
+            self.assertEqual((env['GOW3_GAME_MOTION'], env['GOW3_UPSCALE_BEFORE_PS']), ('1', '4f6cc41b'), title)
+            self.assertEqual(game_profiles.PROFILES[title]['reserve'], 4097 * 0x360, title)
 
     def test_wipeout_startup_hang_fix_sets_the_flag_before_the_thread_starts(self):
         # mov [rbx],rax; mov byte [0xaef4c6],1; call 0x3d20e0; cmp byte [0xaef390],0 (#43), even when
         # the launcher's selection leaves it out.
         self.assertIn('Bug Fix - Startup Hang', selected_patches(WIPEOUT, '01.00', '', only=True))
+        # The shield and effects fix (#37, #73) too: saved lists from before v0.2.27 leave it out.
+        self.assertIn('Bug Fix - Effects above 60 FPS', selected_patches(WIPEOUT, '01.00', '', only=True))
         self.assertEqual(compile_patches(WIPEOUT, ['Bug Fix - Startup Hang'], '01.00', SEGMENTS),
                          [(0x67a514, bytes.fromhex('488903 c605a84f470001 e8bd7bd5ff 803d664e470000'))])
+
+    def test_wipeout_zone_fix_draws_the_last_opened_list(self):
+        # #79: the render thread's step INDEX += 1 (0x9a80ac) becomes INDEX = (NEXT - 1) & 3, NEXT being
+        # the game thread's next slot (0xed5dc4); the same 17 bytes, the rel32 to INDEX unchanged.
+        self.assertIn('Bug Fix - Zone crash above 60 FPS', selected_patches(WIPEOUT, '01.00', '', only=True))
+        self.assertEqual(compile_patches(WIPEOUT, ['Bug Fix - Zone crash above 60 FPS'], '01.00', SEGMENTS),
+                         [(0x665e66, bytes.fromhex('8b0558ff8600 ffc8 83e003 890535223400'))])
+
+    def test_wipeout_zone_points_follow_time(self):
+        # #222: the Zone update's inc [r12+0x300cc] (one point a frame) calls CAVE, the zero padding
+        # after .eh_frame_hdr, which adds (int)((t + dt) * 60) - (int)(t * 60) with its own 60.0 (K60).
+        name = 'Bug Fix - Zone points above 60 FPS'
+        self.assertIn(name, selected_patches(WIPEOUT, '01.00', '', only=True))
+        writes = dict(compile_patches(WIPEOUT, [name], '01.00', SEGMENTS))
+        self.assertEqual(set(writes), {0x964000, 0x964040, 0x2c938b})
+        call = writes[0x2c938b]
+        self.assertEqual((call[0], call[5:]), (0xe8, bytes.fromhex('0f1f00')))
+        self.assertEqual(0x2c938b + 5 + struct.unpack_from('<i', call, 1)[0], 0x964000)
+        cave = writes[0x964000]
+        self.assertEqual((len(cave), cave[-1]), (64, 0xc3))  # ends with ret, right before K60
+        for at in (0x0c, 0x27):  # both vmulss read K60
+            self.assertEqual(0x964000 + at + 8 + struct.unpack_from('<i', cave, at + 4)[0], 0x964040)
+        self.assertEqual(struct.unpack('<f', writes[0x964040])[0], 60.0)
+
+    def test_wipeout_fades_take_the_exact_factor(self):
+        # The fades step once by 1 - (1 - rate)^(dt * 60) at any frame rate: F (x87: fyl2x, f2xm1, fscale
+        # in X) lives in the underwater sound's old loop, X in the shield block, and the shield's first call
+        # lands on F. The engine trail is one line (A, the check between, B) with its own F and X.
+        writes = dict(compile_patches(WIPEOUT, ['Bug Fix - Effects above 60 FPS'], '01.00', SEGMENTS))
+        shield, f_at = writes[0x39ce99], 0x789b21 + 20
+        self.assertEqual(shield[37], 0xe8)
+        self.assertEqual(0x39ce99 + 42 + struct.unpack_from('<i', shield, 38)[0], f_at)
+        self.assertEqual(writes[0x789b21][20:24], bytes.fromhex('4883ec08'))  # F: sub rsp, 8
+        self.assertIn(bytes.fromhex('d9f1'), shield)  # fyl2x
+        trail = compile_patches(WIPEOUT, ['Bug Fix - Engine trail above 60 FPS'], '01.00', SEGMENTS)
+        self.assertEqual([(at, len(data)) for at, data in trail], [(0x736db0, 254)])
+        self.assertIn(bytes.fromhex('d9f0'), trail[0][1])  # f2xm1
+
+    def test_wipeout_model_slots_move_to_the_reserve(self):
+        # #96: the model table (1396 slots of 0x360) moves to 4096 slots in the linked image's
+        # reserve: every lea to it (base, slot 0's in-use byte, the init loop's end) and the limit.
+        name, table, reserve = 'Bug Fix - Model slots', 0x100000, 0x400000
+        code = bytearray(0x1000)
+
+        def lea(at, target, reg):
+            code[at:at + 7] = b'\x48\x8d' + bytes([reg]) + struct.pack('<i', target - at - 7)
+        code[0:5] = bytes.fromhex('89c24863c2')
+        lea(5, table, 0x1d)
+        code[12:16] = bytes.fromhex('c5f857c0')
+        code[0x20:0x34] = bytes.fromhex('4881c160030000baffffffff483d7405000072e4')
+        for i in range(191):
+            lea(0x40 + 8 * i, table + (0x114 if i == 0 else 0x126780 if i == 1 else 0), 0x0d)
+        self.assertIn(name, selected_patches(WIPEOUT, '01.00', '', only=True))
+        skipped = {}
+        self.assertEqual(compile_patches(WIPEOUT, [name], None, SEGMENTS, bytes(code), skipped), [])
+        self.assertEqual(skipped, {name: 'no memory reserved for the bigger table'})
+        writes = dict(compile_patches(WIPEOUT, [name], None, SEGMENTS, bytes(code), {}, (reserve, 4097 * 0x360)))
+        self.assertEqual(writes.pop(0x2e), (4096).to_bytes(4, 'little'))
+        moved = {at: at + 4 + struct.unpack('<i', data)[0] for at, data in writes.items()}
+        self.assertEqual(len(moved), 192)
+        # One zeroed entry before the copy: entry -1 (index -1, "no entry") is read, as the .bss was.
+        base = reserve + 0x360
+        self.assertEqual((moved[8], moved[0x43], moved[0x4b], moved[0x53]),
+                         (base, base + 0x114, base + 4096 * 0x360, base))
 
     def test_wipeout_cheats_are_off_unless_chosen(self):
         # The Cheats page adds them; the points total returns 99998 (mov eax; ret) and the rank table holds 0.
@@ -450,15 +546,19 @@ class HalfResolutionTests(unittest.TestCase):
                                          '01.00', SEGMENTS),
                          [(0x4a7200, bytes.fromhex('b89e860100c3')), (0x3f5406, bytes.fromhex('31db42895ca8fc'))])
         # The ship cheat drops the grid, medal, loyalty and play-time rules (six stores become nops; Purchase
-        # stays), and the 2048 ship lookup always takes its 'already open' jump (jne -> jmp).
+        # stays), the 2048 ship lookup always takes its 'already open' jump (jne -> jmp), and Tigron's own
+        # check (a count above 4) becomes mov r13b,1 (#35, #54).
         writes = compile_patches(WIPEOUT, ['Cheat - Unlock all ships'], '01.00', SEGMENTS)
-        self.assertEqual([o for o, _d in writes], [0x3f9024, 0x3f9183, 0x3f91f8, 0x3f926d, 0x3f92e5, 0x3f935d, 0x5a36ee])
-        self.assertEqual(writes[-1][1], b'\xeb')
+        self.assertEqual([o for o, _d in writes], [0x3f9024, 0x3f9183, 0x3f91f8, 0x3f926d, 0x3f92e5, 0x3f935d, 0x5a36ee,
+                                                 0x3f9b4d])
+        self.assertEqual(writes[6][1], b'\xeb')
+        self.assertEqual(writes[7][1], bytes.fromhex('41b5010f1f4000'))
 
     def test_wipeout_native_4k_keeps_the_4k_mode_flag_false(self):
         # (field & 0xff00) > imm: 0xff00 can never be exceeded, the original 0xeff is from 3840 wide.
         self.assertEqual(compile_patches(WIPEOUT, ['Native 4K rendering (no checkerboard)'], '01.00', SEGMENTS),
-                         [(0x7fb659, (0xff00).to_bytes(4, 'little'))])
+                         [(0x7fb659, (0xff00).to_bytes(4, 'little')),
+                          (0x86bb80, (5248 << 20).to_bytes(8, 'little'))])  # Pro heap (#184)
 
     def test_wipeout_resolution_patches_size_output_half_buffers_and_aspect(self):
         size = lambda value: int.from_bytes(bytes.fromhex(value), 'little')
@@ -466,7 +566,8 @@ class HalfResolutionTests(unittest.TestCase):
             if not meta.get('Name').startswith('Resolution Patch'):
                 continue
             name = meta.get('Name').split(' - ')[1]
-            width, height = {'1440p': (2560, 1440), '4K': (3840, 2160)}.get(name) or map(int, name.split('x'))
+            width, height = {'720p': (1280, 720), '900p': (1600, 900), '1440p': (2560, 1440),
+                             '4K': (3840, 2160)}.get(name) or map(int, name.split('x'))
             lines = {line.get('Address'): line.get('Value') for line in meta.iter('Line')}
             self.assertEqual(size(lines['0x00bfa2e8']), width, meta.get('Name'))        # output width
             self.assertEqual(size(lines['0x00bfa2f6']), height, meta.get('Name'))       # output height
@@ -478,13 +579,9 @@ class HalfResolutionTests(unittest.TestCase):
             for address in cameras:
                 aspect = struct.unpack('<f', bytes.fromhex(lines[address]))[0]
                 self.assertAlmostEqual(aspect, width / height, places=5, msg=meta.get('Name'))
-            # pi/360 of both pools: scaled together, only taller than 16:9 (Vert+), the 16:9 horizontal view at 65 degrees.
+            # pi/360 of both pools: scaled together, only taller than 16:9 (upstream's values since v0.2.76).
             fovs = [a for a in ('0x00c60d0c', '0x00c60d4c') if a in lines]
             self.assertEqual(len(fovs), 2 if width * 9 < height * 16 else 0, meta.get('Name'))
-            for address in fovs:
-                half = struct.unpack('<f', bytes.fromhex(lines[address]))[0] * 65
-                self.assertAlmostEqual(math.tan(half) * width / height, math.tan(math.radians(32.5)) * 16 / 9,
-                                       places=4, msg=meta.get('Name'))
             # The horizontal culling angle covers the view: raised only where the 16/9 one would not.
             cull = struct.unpack('<f', bytes.fromhex(lines.get('0x00c60d28', '972e7e3c')))[0] * 65
             view = math.atan(math.tan(math.radians(32.5)) * max(width / height, 16 / 9))

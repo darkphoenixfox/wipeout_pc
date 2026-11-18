@@ -18,6 +18,7 @@
 #include <errno.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <psapi.h>
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -240,7 +241,18 @@ static int pool(void) {
     runtime_memory_reserve();
     uint64_t bytes=POOL_SIZE+FLEX_SPAN;
     section=CreateFileMapping2(INVALID_HANDLE_VALUE,NULL,FILE_MAP_ALL_ACCESS,PAGE_EXECUTE_READWRITE,SEC_COMMIT,bytes,NULL,NULL,0);
-    if (!section) { fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (error %lu); is the page file large enough?\n",bytes>>20,GetLastError()); return -1; }
+    if (!section) {
+        const DWORD error=GetLastError();
+        fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (error %lu); is the page file large enough?\n",bytes>>20,error);
+        /* #149: what was already charged, by this process and by the whole system. */
+        PROCESS_MEMORY_COUNTERS process={0};
+        MEMORYSTATUSEX system={0};
+        process.cb=sizeof(process); system.dwLength=sizeof(system);
+        if (K32GetProcessMemoryInfo(GetCurrentProcess(),&process,sizeof(process)) && GlobalMemoryStatusEx(&system))
+            fprintf(stderr,"Runtime: private commit of this process %" PRIu64 " MiB; system commit free %" PRIu64 " of %" PRIu64 " MiB\n",
+                    (uint64_t)process.PagefileUsage>>20,(uint64_t)system.ullAvailPageFile>>20,(uint64_t)system.ullTotalPageFile>>20);
+        return -1;
+    }
     backing_base=MapViewOfFile3(section,GetCurrentProcess(),NULL,0,bytes,0,PAGE_READWRITE,NULL,0);
     return backing_base ? 0 : -1;
 }
@@ -411,6 +423,16 @@ uint64_t runtime_memory_flexible_available(void) {
     uint64_t used=flexible_bytes;
     read_unlock();
     return used<FLEXIBLE_SIZE ? FLEXIBLE_SIZE-used : 0;
+}
+/* #149: the pool is otherwise created by the guest's first allocation, after gow3gpu_init. A
+ * blocking shader warm-up there can hold thousands of pipelines in driver memory, and on
+ * Windows the SEC_COMMIT section then no longer fits in the commit limit. probe.c charges it
+ * before the GPU starts, so the game's own memory comes first. */
+int runtime_memory_commit(void) {
+    write_lock();
+    const int result=pool();
+    write_unlock();
+    return result;
 }
 static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
                                   uint64_t alignment, int type, int64_t *out) {
@@ -741,7 +763,9 @@ void *runtime_low_map(size_t size, int prot) {
  * 262144 with GOW3_ASYNC_FENCES=1: wait for guest copies at fences again,
  * 524288 small guest copies batched for the copy threads instead of the recording thread,
  * 1073741824 the lock-free UpdateImage path for clean, tracked images. */
-/* Bits 32 and up: the draw pipeline and related GPU thread work (gpu/shim/gow3_toggles.h). */
+/* Bits 32 and up: the draw pipeline and related GPU thread work (gpu/shim/gow3_toggles.h),
+ * e.g. 9223372036854775808 (bit 63): on-demand startup translates every shader again instead of
+ * reading the saved ones. */
 uint64_t runtime_disabled_optimizations;
 /* Speculative readers of guest memory (GPU draw-preparation workers) register a recovery
  * point: a fault on that thread jumps back to it instead of terminating (probe.c). */

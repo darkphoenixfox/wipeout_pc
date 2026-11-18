@@ -5,8 +5,11 @@ style of [bbport](https://github.com/deadinside28/bloodborne_pc): the game's ori
 code runs directly on the PC's processor, a runtime replaces the PS4 system libraries, and the
 graphics are translated to Vulkan by the shadPS4 video core. There is no CPU emulator.
 
-> **Status: playable, in active development. Menus and races (HD and 2048) play above 60 FPS.**
-> See [Progress](#progress).
+> **Status: playable. Menus and races (HD and 2048) play above 60 FPS.** See [Progress](#progress).
+> In active development. Pull requests are welcome: trusted contributors review them, a bot merges
+> them, and a new release comes out every Sunday. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+> 💙 **Like the port? You can donate with PayPal to `a.deghbouche@esi-sba.dz` or on [Ko-fi](https://ko-fi.com/abd_dbh).** See [Donate](#donate).
 
 This fork adds more render resolutions and aspect ratios (4K, 21:9, 32:9, 4:3), a HUD shape
 setting, and **3D**: side by side for 3D displays, or woven for LeiaSR displays such as the
@@ -29,6 +32,17 @@ Requirements: Windows 10 or 11 (64-bit), a CPU with AVX, a GPU with Vulkan 1.3. 
 > This project is not affiliated with Sony Interactive Entertainment, XDev, Clever Beans or EPOS
 > Game Studios. WipEout is a trademark of Sony Interactive Entertainment.
 
+## Donate
+
+The port is free and I made it in my free time. If you want to thank me or help it go on, you can
+send a donation with **PayPal** to:
+
+**a.deghbouche@esi-sba.dz**
+
+In the PayPal app or on [paypal.com](https://www.paypal.com): **Send**, enter the
+email above, then the amount.
+
+Or on **Ko-fi**: [ko-fi.com/abd_dbh](https://ko-fi.com/abd_dbh). Thank you!
 ## What this fork adds
 
 | Feature | Where | Notes |
@@ -63,7 +77,7 @@ How this fork follows the original project and how it is released: [docs/fork.md
 - 💡 **Want something?** Feature requests are welcome too. Open an issue and tell me what you
   would like.
 - 🛠️ **Can test or code?** Reports from AMD, Intel, Linux and Steam Deck players help a lot, and
-  pull requests are welcome.
+  pull requests are welcome. How they get merged: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Known problems are in the [open issues](https://github.com/AbdelmoumenDeghbouche/wipeout_pc/issues).
 Thanks to everyone who has played, tested and reported so far!
@@ -116,6 +130,17 @@ sound effects stay.
 
 Each song is leveled, so loud and quiet songs sound alike; Music volume 100% is about as loud as
 the game's own music. Without the launcher, `GOW3_MUSIC_DIR` points to another folder.
+
+## Discord Rich Presence
+
+With **Show Discord Rich Presence** on (launcher, Advanced page), your Discord profile shows
+"Playing WipEout: Omega Collection" with the game's page and cover from Discord's own game library,
+the time played, and what you do: "In the menus", "Racing on Sebenco Climb", "Zone on Altima",
+"Eliminator online on Talon's Junction", the online lobby's player count, and the song of your own
+music (hover the small icon). Off by default; the game's code is untouched: the runtime learns the
+scene from the sound banks the game loads (`src/runtime_presence.c`) and `scripts/discord_presence.py`
+tells the Discord app on your PC. Nothing is sent anywhere else. Without the launcher,
+`GOW3_DISCORD=0` turns it off.
 
 ## Supported game versions
 
@@ -226,6 +251,7 @@ function the runtime does not implement and prints its name.
 | Json2 | `src/runtime_json.c` | sce::Json values, parser and serializer (race results) |
 | Red zones | `src/redzone.cpp`, `scripts/function_starts.py` | Keeps Windows exception records out of the game's red zones |
 | Launcher | `launcher/` | Settings window and game start |
+| Discord Rich Presence | `src/runtime_presence.c`, `scripts/discord_presence.py` | The game's scene, track, mode, online room and song, shown on Discord |
 | GPU | `gpu/shadps4/` | shadPS4 video core (Vulkan) |
 | Resolution patches | `patches/WipEout_Omega_Collection.xml`, `tools/make_wipeout_resolution_patch.py` | Output size, half-resolution buffers, camera aspect ratio, field of view and culling for each size |
 | 3D | `renderer_vulkan/vk_stereo_depth.cpp`, `host_passes/stereo_pass.cpp`, `host_shaders/stereo.comp` | Copies the scene depth and the picture before the HUD, then builds both eyes from the depth |

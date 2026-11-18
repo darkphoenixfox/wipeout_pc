@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -39,6 +40,9 @@ public:
     StagingBufferPool(const StagingBufferPool&) = delete;
     StagingBufferPool& operator=(const StagingBufferPool&) = delete;
 
+    /// Charge ring space or the largest reusable dedicated buffer accepted for an upload.
+    static u64 UploadReservationBytes(u64 size, u64 alignment);
+
     /// Requests size bytes of memory of the given type.
     [[nodiscard]] StagingBufferRef Request(u64 size, VideoCore::MemoryType type, u64 alignment = 0,
                                            bool deferred = false);
@@ -49,10 +53,17 @@ public:
     /// Releases idle memory.
     void TickFrame();
 
+    /// gow3: set by the texture cache while video memory is low: large buffers then go after
+    /// LOW_MEMORY_IDLE_FRAMES instead of 3000 frames.
+    void SetLowMemory(bool low) {
+        low_memory = low;
+    }
+
 private:
     struct Block {
         std::unique_ptr<VideoCore::StreamBuffer> buffer;
         u64 last_used_frame;
+        std::chrono::steady_clock::time_point last_used_time; ///< gow3: TrimRing's quiet rule
     };
 
     struct Ring {
@@ -68,6 +79,7 @@ private:
     };
 
     static constexpr size_t NUM_TYPES = 3;
+    bool low_memory = false;
 
     StagingBufferRef RequestFromRing(Ring& ring, u64 size, u64 alignment,
                                      VideoCore::MemoryType type);
@@ -84,6 +96,8 @@ private:
     std::array<Ring, NUM_TYPES> rings;
     u64 keep_blocks = 0; ///< gow3: ring blocks never trimmed
     std::array<std::vector<LargeBuffer>, NUM_TYPES> large_caches;
+    /// gow3: the last large request of each type (TrimLarge frees idle ones after a quiet spell).
+    std::array<std::chrono::steady_clock::time_point, NUM_TYPES> last_large_request{};
     u64 frame = 0;
 };
 

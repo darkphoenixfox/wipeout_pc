@@ -85,7 +85,8 @@ public:
 
 struct Image {
     explicit Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime,
-                   Common::SlotVector<ImageView>& slot_image_views, const ImageInfo& info);
+                   Common::SlotVector<ImageView>& slot_image_views, const ImageInfo& info,
+                   u32 host_mip_levels = 0);
     ~Image();
 
     Image(const Image&) = delete;
@@ -93,6 +94,8 @@ struct Image {
 
     Image(Image&&) = default;
     Image& operator=(Image&&) = default;
+
+    bool CanGrowMipLevels(const ImageInfo& requested) const;
 
     bool Overlaps(VAddr overlap_cpu_addr, size_t overlap_size) const noexcept {
         const VAddr overlap_end = overlap_cpu_addr + overlap_size;
@@ -157,6 +160,10 @@ public:
     VAddr track_addr_end = 0;
     VAddr guest_begin = 0; ///< info.guest_address
     VAddr guest_end = 0;   ///< info.guest_address + info.guest_size
+    /// gow3: flip of the last CPU write fault on the image (TextureCache::InvalidateMemory).
+    u64 cpu_dirty_flip = ~0ULL;
+    /// gow3: left unprotected until a flip after cpu_dirty_flip (DeferStreamedImageTracking).
+    bool track_deferred = false;
     BackingImage* backing{};
     /// gow3: gc tick of the last LRU touch; skips the LRU list (a cache miss) when current.
     mutable u64 lru_touched_tick = ~0ULL;
@@ -193,6 +200,11 @@ public:
     boost::container::static_vector<u64, 16> mip_hashes{};
     u64 lru_id{};
     u64 hash{};
+
+    /// gow3: the uid of the newest image created so far.
+    static u64 LastUid() {
+        return global_image_uid.Current();
+    }
 
 private:
     static Common::IncrementalIdProvider<u64> global_image_uid;

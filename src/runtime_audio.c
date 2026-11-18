@@ -8,6 +8,7 @@
  * ports only follow the clock. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "gpu/gow3gpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -145,7 +146,8 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
         if (p->stream) SDL_ResumeAudioStreamDevice(p->stream);
         else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
     }
-    p->stats=getenv("GOW3_AUDIO_STATS")!=NULL;
+    /* The launcher's "Frame statistics in the log" (GOW3_FRAME_STATS) shows them too (#66: crackles). */
+    p->stats=getenv("GOW3_AUDIO_STATS")!=NULL || (getenv("GOW3_FRAME_STATS") && getenv("GOW3_FRAME_STATS")[0]=='1');
     const char *dump=getenv("GOW3_AUDIO_DUMP");
     if (dump) {
         char path[4096];
@@ -183,10 +185,12 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
     pthread_mutex_lock(&p->lock);
     size_t samples=(size_t)p->frames*(size_t)p->channels, bytes=samples*(size_t)p->sample_bytes;
     uint64_t period=(uint64_t)p->frames*1000000000u/48000u;
+    float boost=1.0f;
     if (data && p->type==1 && p->is_float) { /* BGM: the player's own music (runtime_music.c) */
         static float music[2048*8]; /* one BGM port, under its lock */
         memcpy(music,data,bytes);
         if (runtime_music_bgm(music,p->frames,p->channels)) data=music;
+        else boost=(float)gow3gpu_game_music_volume()/100.0f; /* the game's own music (#97) */
     }
     if (data) {
         /* Apply per-channel volume and map PS4 8ch (L R C LFE SL SR BL BR) to SDL 7.1 order. */
@@ -195,8 +199,12 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
         for (size_t f=0;f<(size_t)p->frames;++f) for (int c=0;c<p->channels;++c) {
             int target=p->channels==8 && !p->std_layout ? remap[c] : c;
             size_t from=f*(size_t)p->channels+(size_t)c, to=f*(size_t)p->channels+(size_t)target;
-            float gain=(float)p->volume[c]/VOLUME_0DB;
-            if (p->is_float) { float v; memcpy(&v,(const char *)data+from*4,4); v*=gain; memcpy(converted+to*4,&v,4); }
+            float gain=(float)p->volume[c]/VOLUME_0DB*boost;
+            if (p->is_float) {
+                float v; memcpy(&v,(const char *)data+from*4,4); v*=gain;
+                if (boost>1.0f) v=v>1.0f ? 1.0f : v<-1.0f ? -1.0f : v;
+                memcpy(converted+to*4,&v,4);
+            }
             else { int16_t v; memcpy(&v,(const char *)data+from*2,2); v=(int16_t)((float)v*gain); memcpy(converted+to*2,&v,2); }
         }
         if (p->downmix) bytes=downmix_stereo(converted,(size_t)p->frames,p->is_float);

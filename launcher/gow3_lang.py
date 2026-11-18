@@ -19,7 +19,7 @@ KEYS = [
     'Upscaling',
     "Temporal upscaling with the game's own motion vectors. FSR 4 needs its assets (below) and a GPU with INT8 dot products; otherwise the game falls back to FSR 3.1 by itself.",
     'Quality preset', 'Render scale per axis: Quality renders at 1/1.5 of the output size.',
-    'Output resolution', 'What the upscaler produces; the HUD is drawn at this size too.',
+    'Output resolution', 'From 1920x1080 up it follows Render resolution, which sets how sharp the race is; Upscaling divides that.',
     'Live resolution changes',
     'Off: outputs other than 1080p are set by a patch at start (fastest; changing them in the game restarts it). On: change output and preset in the game without a restart, at a cost.',
     'Sharpening (RCAS)', 'Sharpness', 'Object motion vectors',
@@ -751,7 +751,8 @@ WINDOWS_LANGUAGES = {0x19: 'ru', 0x01: 'ar', 0x0a: 'es', 0x16: 'pt', 0x0c: 'fr',
 EXTRA = {
     'pt': {
         'Show Discord Rich Presence': 'Mostrar Discord Rich Presence',
-        'Shows only the game name and the time played on your Discord profile.': 'Mostra no seu perfil do Discord apenas o nome do jogo e o tempo jogado.',
+        'Shows the game, the track and mode you play, your online lobby and the time played on your Discord profile, as "Playing WipEout: Omega Collection" with its game page.':
+            'Mostra no seu perfil do Discord o jogo, a pista e o modo em que você joga, o seu lobby online e o tempo jogado, como "Playing WipEout: Omega Collection" com a página do jogo.',
         'Game multisampling': 'Multisampling do jogo',
         'Automatic ({}: off)': 'Automático ({}: desligado)',
         'Automatic ({}: on)': 'Automático ({}: ligado)',
@@ -922,8 +923,12 @@ EXTRA = {
         'Play my music': 'Tocar minhas músicas',
         "Off: the game's own music, even with songs in the folder.": 'Desligado: a música do próprio jogo, mesmo com músicas na pasta.',
         'Settings': 'Configurações',
-        'Every ship and livery is open: the ones that need medals, team loyalty, play time or a campaign grid, and the 2048 ships that need a rank, a 2048 event or a prototype challenge. Not the VR versions, nor the Tigron and Van-Uber DLC teams. Off: they need your own progress again.': 'Todas as naves e pinturas ficam abertas: as que precisam de medalhas, lealdade à equipe, tempo de jogo ou uma grade de campanha, e as naves do 2048 que precisam de um rank, de um evento do 2048 ou de um desafio de protótipo. Não as versões de VR, nem as equipes DLC Tigron e Van-Uber. Desligado: elas voltam a precisar do seu progresso.',
+        'Every ship and livery is open: the ones that need medals, team loyalty, play time or a campaign grid, Tigron, and the 2048 ships that need a rank, a 2048 event or a prototype challenge. Not the VR versions, nor the Van-Uber team (their own cheats below). Off: they need your own progress again.': 'Todas as naves e pinturas ficam abertas: as que precisam de medalhas, lealdade à equipe, tempo de jogo ou uma grade de campanha, a Tigron, e as naves do 2048 que precisam de um rank, de um evento do 2048 ou de um desafio de protótipo. Não as versões de VR, nem a equipe Van-Uber (têm trapaças próprias abaixo). Desligado: elas voltam a precisar do seu progresso.',
         'Unlock all ships (HD, HD Fury and 2048)': 'Desbloquear todas as naves (HD, HD Fury e 2048)',
+        'VR ship liveries outside VR': 'Pinturas das naves VR fora do VR',
+        'The VR HD and VR Fury liveries can be picked on a normal screen too, once they are unlocked. Off: they need PlayStation VR mode again.': 'As pinturas VR HD e VR Fury podem ser escolhidas numa tela normal também, depois de desbloqueadas. Desligado: elas voltam a precisar do modo PlayStation VR.',
+        'Van Über team (owned DLC)': 'Equipe Van Über (DLC que você tem)',
+        "For a copy whose PSN account owns the Van Über team DLC: the game sees it as installed, offline. Off: the team needs the console's entitlement again.": 'Para uma cópia cuja conta PSN tem o DLC da equipe Van Über: o jogo o vê como instalado, offline. Desligado: a equipe volta a precisar da licença do console.',
         'Not yet: the 2049 and 2050 cups of 2048 (they open when you finish the cup before them).': 'Ainda não: as copas 2049 e 2050 do 2048 (abrem quando você termina a copa anterior).',
         'Cheats': 'Trapaças',
         'Open parts of the game without playing for them. Your saves keep your own progress.': 'Abra partes do jogo sem jogar por elas. Os seus saves guardam o seu próprio progresso.',
@@ -956,6 +961,43 @@ EXTRA = {
         'Temporal anti-aliasing': 'Antisserrilhamento temporal',
         'Shuffle': 'Aleatório',
         'Music volume': 'Volume da música',
+        'In-game menu patches': 'Patches dos menus do jogo',
+        'Eliminator target limit': 'Limite do alvo do Eliminator',
+        "The highest target of the Eliminator slider in the race setup (the game's own: 600 points).":
+            'O alvo mais alto do controle do Eliminator na configuração da corrida (o do jogo: 600 pontos).',
+        'Upscaling': 'Upscaling',
+        'Off (full resolution)': 'Desligado (resolução completa)',
+        'Quality (scene at 1/1.5)': 'Qualidade (cena a 1/1,5)',
+        'Balanced (scene at 1/1.7)': 'Equilibrado (cena a 1/1,7)',
+        'Performance (scene at 1/2)': 'Desempenho (cena a 1/2)',
+        'Draws the race at a lower resolution and scales it up with the method above: more FPS, a softer picture. The HUD and menus stay sharp. Off: smooth edges only, at full resolution. Also in the game: Insert > Image.':
+            'Desenha a corrida numa resolução menor e aumenta com o método acima: mais FPS, imagem mais suave. O HUD e os menus continuam nítidos. Desligado: só suaviza as bordas, na resolução completa. Também no jogo: Insert > Image.',
+        'Button layout': 'Layout dos botões',
+        "Standard (the game's)": 'Padrão (o do jogo)',
+        'Racer: R2 accelerate, L2 brake': 'Racer: R2 acelera, L2 freia',
+        "Racer (as on the PS Vita): R2 accelerates, L2 brakes, Square with left or right is that air brake, Cross fires, Circle absorbs. Keep the game's own controls at their default with it.":
+            'Racer (como no PS Vita): R2 acelera, L2 freia, Quadrado com esquerda ou direita é esse freio aéreo, X dispara, Círculo absorve. Deixe os controles do próprio jogo no padrão com ele.',
+        'Menu songs: put the songs for the menus in a subfolder named menu. They play only in the menus, and the other songs play in races.':
+            'Músicas do menu: coloque as músicas para os menus numa subpasta chamada menu. Elas tocam só nos menus, e as outras músicas tocam nas corridas.',
+        'Mode songs: songs in subfolders named zone, eliminator or detonator play only in that mode. A mode without its own folder plays the race songs.':
+            'Músicas de modo: as músicas em subpastas chamadas zone, eliminator ou detonator tocam só nesse modo. Um modo sem pasta própria toca as músicas das corridas.',
+        'Profile':
+            'Perfil',
+        'Each profile has its own saves and stats. Type a new name to start one. Empty: the main saves.':
+            'Cada perfil tem os seus próprios saves e estatísticas. Escreva um nome novo para começar um. Vazio: os saves principais.',
+        'Texture quality': 'Qualidade das texturas',
+        'Full (default)': 'Completa (padrão)',
+        'Medium (largest textures at 4096)': 'Média (texturas maiores em 4096)',
+        'Low (for 4 GB graphics cards)': 'Baixa (para placas de vídeo de 4 GB)',
+        'Low loads the largest textures at half size or less: about 1 GB less video memory in a race. For graphics cards with 4 GB that crash or freeze in races.':
+            'Baixa carrega as maiores texturas com metade do tamanho ou menos: cerca de 1 GB a menos de memória de vídeo numa corrida. Para placas de 4 GB que travam ou fecham nas corridas.',
+        'Save data folder (optional)': 'Pasta dos saves (opcional)',
+        'Choose the save data folder': 'Escolha a pasta dos saves',
+        'Only the saves, in a folder of their own: for example a network share two PCs play from (not both at once). Empty: savedata in the saves folder.':
+            'Só os saves, numa pasta própria: por exemplo uma pasta de rede usada por dois PCs (não ao mesmo tempo). Vazio: savedata na pasta de saves.',
+        'Game music volume': 'Volume da música do jogo',
+        "The game's own music, on top of its Audio Options. Above 100% it is louder than the game allows; very loud parts may clip.":
+            'A música do próprio jogo, além das Opções de Áudio dele. Acima de 100% fica mais alta do que o jogo permite; partes muito altas podem distorcer.',
         "100%: about as loud as the game's own music. Each song is leveled, so quiet and loud songs sound alike.":
             '100%: mais ou menos o volume da música do próprio jogo. Cada música é nivelada, então músicas baixas e altas soam parecidas.',
         'Off: the songs play in the order of the list below.': 'Desligado: as músicas tocam na ordem da lista abaixo.',
@@ -966,6 +1008,9 @@ EXTRA = {
         'F12 in the game': 'F12 no jogo',
         "Saves the game's image, without the overlay, as a PNG in the screenshots folder of the saves.": 'Salva a imagem do jogo, sem o overlay, em PNG na pasta screenshots dos saves.',
         'Vibration': 'Vibração',
+        'Stick deadzone': 'Zona morta do analógico',
+        'The download of version {} is still being prepared. Try again in a few minutes.': 'O download da versão {} ainda está sendo preparado. Tente de novo em alguns minutos.',
+        "Ignores small stick movements, for a stick that drifts. 0% keeps the game's own.": 'Ignora pequenos movimentos do analógico, para um analógico com drift. 0% mantém a do jogo.',
         "Strength of the gamepad's vibration; 0% turns it off.": 'Força da vibração do controle; 0% desliga.',
         'Windows could not reserve the memory the game needs. Close other programs, or let the Windows page file grow (for example 16384 MB initial, 32768 MB maximum), and start again.':
             'O Windows não conseguiu reservar a memória que o jogo precisa. Feche outros programas, ou deixe o arquivo de paginação do Windows crescer (por exemplo 16384 MB inicial, 32768 MB máximo), e inicie de novo.',
@@ -1048,7 +1093,8 @@ EXTRA = {
     },
     'es': {
         'Show Discord Rich Presence': 'Mostrar Discord Rich Presence',
-        'Shows only the game name and the time played on your Discord profile.': 'Muestra en tu perfil de Discord solo el nombre del juego y el tiempo jugado.',
+        'Shows the game, the track and mode you play, your online lobby and the time played on your Discord profile, as "Playing WipEout: Omega Collection" with its game page.':
+            'Muestra en tu perfil de Discord el juego, la pista y el modo que juegas, tu sala online y el tiempo jugado, como "Playing WipEout: Omega Collection" con la página del juego.',
         'Game multisampling': 'Multisampling del juego',
         'Automatic ({}: off)': 'Automático ({}: desactivado)',
         'Automatic ({}: on)': 'Automático ({}: activado)',
@@ -1275,8 +1321,12 @@ EXTRA = {
         'Play my music': 'Reproducir mi música',
         "Off: the game's own music, even with songs in the folder.": 'Desactivado: la música del propio juego, aunque haya canciones en la carpeta.',
         'Settings': 'Ajustes',
-        'Every ship and livery is open: the ones that need medals, team loyalty, play time or a campaign grid, and the 2048 ships that need a rank, a 2048 event or a prototype challenge. Not the VR versions, nor the Tigron and Van-Uber DLC teams. Off: they need your own progress again.': 'Todas las naves y decoraciones quedan abiertas: las que necesitan medallas, lealtad al equipo, tiempo de juego o una cuadrícula de campaña, y las naves de 2048 que necesitan un rango, un evento de 2048 o un desafío de prototipo. No las versiones de VR, ni los equipos DLC Tigron y Van-Uber. Desactivado: vuelven a necesitar tu progreso.',
+        'Every ship and livery is open: the ones that need medals, team loyalty, play time or a campaign grid, Tigron, and the 2048 ships that need a rank, a 2048 event or a prototype challenge. Not the VR versions, nor the Van-Uber team (their own cheats below). Off: they need your own progress again.': 'Todas las naves y decoraciones quedan abiertas: las que necesitan medallas, lealtad al equipo, tiempo de juego o una cuadrícula de campaña, Tigron, y las naves de 2048 que necesitan un rango, un evento de 2048 o un desafío de prototipo. No las versiones de VR, ni el equipo Van-Uber (tienen sus propios trucos abajo). Desactivado: vuelven a necesitar tu progreso.',
         'Unlock all ships (HD, HD Fury and 2048)': 'Desbloquear todas las naves (HD, HD Fury y 2048)',
+        'VR ship liveries outside VR': 'Decoraciones de naves VR fuera de VR',
+        'The VR HD and VR Fury liveries can be picked on a normal screen too, once they are unlocked. Off: they need PlayStation VR mode again.': 'Las decoraciones VR HD y VR Fury se pueden elegir también en una pantalla normal, una vez desbloqueadas. Desactivado: vuelven a necesitar el modo PlayStation VR.',
+        'Van Über team (owned DLC)': 'Equipo Van Über (DLC que tienes)',
+        "For a copy whose PSN account owns the Van Über team DLC: the game sees it as installed, offline. Off: the team needs the console's entitlement again.": 'Para una copia cuya cuenta de PSN tiene el DLC del equipo Van Über: el juego lo ve instalado, sin conexión. Desactivado: el equipo vuelve a necesitar la licencia de la consola.',
         'Not yet: the 2049 and 2050 cups of 2048 (they open when you finish the cup before them).': 'Aún no: las copas 2049 y 2050 de 2048 (se abren al terminar la copa anterior).',
         'Cheats': 'Trucos',
         'Open parts of the game without playing for them. Your saves keep your own progress.': 'Abre partes del juego sin jugar por ellas. Tus partidas guardan tu propio progreso.',
@@ -1309,6 +1359,43 @@ EXTRA = {
         'Temporal anti-aliasing': 'Antialiasing temporal',
         'Shuffle': 'Aleatorio',
         'Music volume': 'Volumen de la música',
+        'In-game menu patches': 'Parches de los menús del juego',
+        'Eliminator target limit': 'Límite del objetivo de Eliminator',
+        "The highest target of the Eliminator slider in the race setup (the game's own: 600 points).":
+            'El objetivo más alto del control de Eliminator en la configuración de la carrera (el del juego: 600 puntos).',
+        'Upscaling': 'Escalado',
+        'Off (full resolution)': 'Desactivado (resolución completa)',
+        'Quality (scene at 1/1.5)': 'Calidad (escena a 1/1,5)',
+        'Balanced (scene at 1/1.7)': 'Equilibrado (escena a 1/1,7)',
+        'Performance (scene at 1/2)': 'Rendimiento (escena a 1/2)',
+        'Draws the race at a lower resolution and scales it up with the method above: more FPS, a softer picture. The HUD and menus stay sharp. Off: smooth edges only, at full resolution. Also in the game: Insert > Image.':
+            'Dibuja la carrera a una resolución menor y la escala con el método de arriba: más FPS, imagen más suave. El HUD y los menús siguen nítidos. Desactivado: solo suaviza los bordes, a resolución completa. También en el juego: Insert > Image.',
+        'Button layout': 'Distribución de botones',
+        "Standard (the game's)": 'Estándar (la del juego)',
+        'Racer: R2 accelerate, L2 brake': 'Racer: R2 acelera, L2 frena',
+        "Racer (as on the PS Vita): R2 accelerates, L2 brakes, Square with left or right is that air brake, Cross fires, Circle absorbs. Keep the game's own controls at their default with it.":
+            'Racer (como en PS Vita): R2 acelera, L2 frena, Cuadrado con izquierda o derecha es ese aerofreno, X dispara, Círculo absorbe. Deja los controles del propio juego en su valor predeterminado con él.',
+        'Menu songs: put the songs for the menus in a subfolder named menu. They play only in the menus, and the other songs play in races.':
+            'Canciones del menú: pon las canciones para los menús en una subcarpeta llamada menu. Suenan solo en los menús, y las demás canciones suenan en las carreras.',
+        'Mode songs: songs in subfolders named zone, eliminator or detonator play only in that mode. A mode without its own folder plays the race songs.':
+            'Canciones por modo: las canciones en subcarpetas llamadas zone, eliminator o detonator suenan solo en ese modo. Un modo sin carpeta propia usa las canciones de las carreras.',
+        'Profile':
+            'Perfil',
+        'Each profile has its own saves and stats. Type a new name to start one. Empty: the main saves.':
+            'Cada perfil tiene sus propias partidas guardadas y estadísticas. Escribe un nombre nuevo para empezar uno. Vacío: las partidas principales.',
+        'Texture quality': 'Calidad de texturas',
+        'Full (default)': 'Completa (predeterminada)',
+        'Medium (largest textures at 4096)': 'Media (texturas más grandes a 4096)',
+        'Low (for 4 GB graphics cards)': 'Baja (para tarjetas gráficas de 4 GB)',
+        'Low loads the largest textures at half size or less: about 1 GB less video memory in a race. For graphics cards with 4 GB that crash or freeze in races.':
+            'Baja carga las texturas más grandes a la mitad de tamaño o menos: cerca de 1 GB menos de memoria de vídeo en una carrera. Para tarjetas gráficas de 4 GB que se cierran o se congelan en carreras.',
+        'Save data folder (optional)': 'Carpeta de partidas guardadas (opcional)',
+        'Choose the save data folder': 'Elige la carpeta de partidas guardadas',
+        'Only the saves, in a folder of their own: for example a network share two PCs play from (not both at once). Empty: savedata in the saves folder.':
+            'Solo las partidas, en una carpeta propia: por ejemplo una carpeta de red que usan dos PCs (no a la vez). Vacío: savedata en la carpeta de guardado.',
+        'Game music volume': 'Volumen de la música del juego',
+        "The game's own music, on top of its Audio Options. Above 100% it is louder than the game allows; very loud parts may clip.":
+            'La música del propio juego, además de sus Opciones de audio. Por encima de 100% suena más fuerte de lo que el juego permite; las partes muy fuertes pueden saturar.',
         "100%: about as loud as the game's own music. Each song is leveled, so quiet and loud songs sound alike.":
             '100%: más o menos el volumen de la música del propio juego. Cada canción se nivela, así que las canciones suaves y fuertes suenan parecido.',
         'Off: the songs play in the order of the list below.': 'Desactivado: las canciones suenan en el orden de la lista de abajo.',
@@ -1320,6 +1407,9 @@ EXTRA = {
         "Saves the game's image, without the overlay, as a PNG in the screenshots folder of the saves.":
             'Guarda la imagen del juego, sin el overlay, como PNG en la carpeta screenshots de las partidas.',
         'Vibration': 'Vibración',
+        'Stick deadzone': 'Zona muerta del stick',
+        'The download of version {} is still being prepared. Try again in a few minutes.': 'La descarga de la versión {} todavía se está preparando. Inténtalo de nuevo en unos minutos.',
+        "Ignores small stick movements, for a stick that drifts. 0% keeps the game's own.": 'Ignora los movimientos pequeños del stick, para un stick con drift. 0% deja la del juego.',
         "Strength of the gamepad's vibration; 0% turns it off.": 'Fuerza de la vibración del mando; 0% la desactiva.',
         '(none)': '(ninguna)',
         'Adaptive mouse: how far the mouse moves for one step of a rotation. Also in the in-game menu.':
@@ -1602,6 +1692,253 @@ EXTRA['es'].update({
     '4:3 more at the top and bottom. Use a window or screen of the same shape.':
         'El tamaño al que dibuja el juego; más alto es más nítido y más lento. Más ancho que 16:9 muestra más '
         'a los lados, 4:3 más arriba y abajo. Usa una ventana o pantalla de la misma forma.',
+})
+
+EXTRA['pt'].update({
+    'NVIDIA DLSS': 'NVIDIA DLSS',
+    'Download NVIDIA DLSS ({} MB)': 'Baixar NVIDIA DLSS ({} MB)',
+    'Downloading…': 'Baixando…',
+    'Downloading… {} of {} MB': 'Baixando… {} de {} MB',
+    'Installed.': 'Instalado.',
+    'Not in this build.': 'Não incluído nesta versão.',
+    'No NVIDIA RTX graphics card found.': 'Nenhuma placa de vídeo NVIDIA RTX encontrada.',
+    'Could not download NVIDIA DLSS: {}': 'Não foi possível baixar o NVIDIA DLSS: {}',
+    'NVIDIA DLSS is installed. Temporal anti-aliasing is on with DLAA: click Save, then PLAY.':
+        'NVIDIA DLSS instalado. O anti-aliasing temporal está ligado com DLAA: clique em Salvar e depois em JOGAR.',
+    "DLAA needs NVIDIA's DLSS file, nvngx_dlss.dll. The launcher downloads it from NVIDIA's own GitHub (DLSS {}) "
+    'and checks it before using it. Needs an NVIDIA RTX graphics card.':
+        'O DLAA precisa do arquivo DLSS da NVIDIA, nvngx_dlss.dll. O launcher o baixa do próprio GitHub da NVIDIA '
+        '(DLSS {}) e o verifica antes de usar. Precisa de uma placa de vídeo NVIDIA RTX.',
+    "Off (default): the game's own image. On: FSR 3.1 or DLAA smooth edges at the render resolution, from the "
+    "game's own motion vectors, in place of the game's multisampling. The method can also be changed while "
+    'playing: in-game menu (Insert / R3+L2) > Image.':
+        'Desligado (padrão): a imagem do próprio jogo. Ligado: FSR 3.1 ou DLAA suavizam as bordas na resolução de '
+        'render, com os vetores de movimento do próprio jogo, no lugar do multisampling do jogo. O método também '
+        'pode ser trocado durante o jogo: menu do jogo (Insert / R3+L2) > Image.',
+    'Split-screen: a second gamepad plays as player 2, with the same gamepad mapping.':
+        'Tela dividida: um segundo controle joga como jogador 2, com o mesmo mapeamento do controle.',
+    'no patch fits your eboot.bin: add the game update (Game > Update folder)':
+        'nenhum patch serve para o seu eboot.bin: adicione a atualização do jogo (Jogo > Pasta do update)',
+})
+EXTRA['es'].update({
+    'NVIDIA DLSS': 'NVIDIA DLSS',
+    'Download NVIDIA DLSS ({} MB)': 'Descargar NVIDIA DLSS ({} MB)',
+    'Downloading…': 'Descargando…',
+    'Downloading… {} of {} MB': 'Descargando… {} de {} MB',
+    'Installed.': 'Instalado.',
+    'Not in this build.': 'No incluido en esta versión.',
+    'No NVIDIA RTX graphics card found.': 'No se encontró ninguna tarjeta gráfica NVIDIA RTX.',
+    'Could not download NVIDIA DLSS: {}': 'No se pudo descargar NVIDIA DLSS: {}',
+    'NVIDIA DLSS is installed. Temporal anti-aliasing is on with DLAA: click Save, then PLAY.':
+        'NVIDIA DLSS está instalado. El antialiasing temporal está activado con DLAA: pulsa Guardar y luego JUGAR.',
+    "DLAA needs NVIDIA's DLSS file, nvngx_dlss.dll. The launcher downloads it from NVIDIA's own GitHub (DLSS {}) "
+    'and checks it before using it. Needs an NVIDIA RTX graphics card.':
+        'DLAA necesita el archivo DLSS de NVIDIA, nvngx_dlss.dll. El launcher lo descarga del propio GitHub de '
+        'NVIDIA (DLSS {}) y lo comprueba antes de usarlo. Necesita una tarjeta gráfica NVIDIA RTX.',
+    "Off (default): the game's own image. On: FSR 3.1 or DLAA smooth edges at the render resolution, from the "
+    "game's own motion vectors, in place of the game's multisampling. The method can also be changed while "
+    'playing: in-game menu (Insert / R3+L2) > Image.':
+        'Desactivado (por defecto): la imagen propia del juego. Activado: FSR 3.1 o DLAA suavizan los bordes a la '
+        'resolución de render, con los vectores de movimiento del propio juego, en lugar del multisampling del '
+        'juego. El método también se puede cambiar mientras juegas: menú del juego (Insert / R3+L2) > Image.',
+    'Split-screen: a second gamepad plays as player 2, with the same gamepad mapping.':
+        'Pantalla dividida: un segundo mando juega como jugador 2, con la misma asignación del mando.',
+    'no patch fits your eboot.bin: add the game update (Game > Update folder)':
+        'ningún parche sirve para tu eboot.bin: añade la actualización del juego (Juego > Carpeta de la actualización)',
+})
+
+EXTRA['pt'].update({
+    'Show the log file': 'Mostrar o arquivo de log',
+    'The graphics card ran out of video memory. Choose a lower Graphics > Render resolution (900p or 720p), '
+    'turn off PS4 Pro mode, and close other programs.':
+        'A placa de vídeo ficou sem memória de vídeo. Escolha uma Gráficos > Resolução de renderização menor '
+        '(900p ou 720p), desligue o modo PS4 Pro e feche outros programas.',
+    'First connected': 'Primeiro conectado',
+    'Second connected': 'Segundo conectado',
+    'Third connected': 'Terceiro conectado',
+    'Fourth connected': 'Quarto conectado',
+    'With several gamepads connected: the one that plays. Player 2 gets the next free one.':
+        'Com vários controles conectados: o que joga. O jogador 2 fica com o próximo livre.',
+    'Keep the song between races': 'Manter a música entre as corridas',
+    'Each race goes on with the song that was playing. Off: a new song starts with each race.':
+        'Cada corrida continua com a música que estava tocando. Desligado: uma nova música começa a cada corrida.',
+    'The game stopped because of an error (code {}).': 'O jogo parou por causa de um erro (código {}).',
+    'To report it, attach this file to your GitHub issue:\n{}\n\nShow the file now?':
+        'Para relatar, anexe este arquivo à sua issue no GitHub:\n{}\n\nMostrar o arquivo agora?',
+})
+EXTRA['es'].update({
+    'Show the log file': 'Mostrar el archivo de log',
+    'The graphics card ran out of video memory. Choose a lower Graphics > Render resolution (900p or 720p), '
+    'turn off PS4 Pro mode, and close other programs.':
+        'La tarjeta gráfica se quedó sin memoria de vídeo. Elige una Gráficos > Resolución de render menor '
+        '(900p o 720p), desactiva el modo PS4 Pro y cierra otros programas.',
+    'First connected': 'Primero conectado',
+    'Second connected': 'Segundo conectado',
+    'Third connected': 'Tercero conectado',
+    'Fourth connected': 'Cuarto conectado',
+    'With several gamepads connected: the one that plays. Player 2 gets the next free one.':
+        'Con varios mandos conectados: el que juega. El jugador 2 usa el siguiente libre.',
+    'Keep the song between races': 'Mantener la canción entre carreras',
+    'Each race goes on with the song that was playing. Off: a new song starts with each race.':
+        'Cada carrera sigue con la canción que sonaba. Desactivado: empieza una canción nueva en cada carrera.',
+    'The game stopped because of an error (code {}).': 'El juego se detuvo por un error (código {}).',
+    'To report it, attach this file to your GitHub issue:\n{}\n\nShow the file now?':
+        'Para informarlo, adjunta este archivo a tu issue de GitHub:\n{}\n\n¿Mostrar el archivo ahora?',
+})
+
+EXTRA['pl'] = {
+    'In-game menu patches': 'Łatki menu gry',
+    'Eliminator target limit': 'Limit celu Eliminatora',
+    "The highest target of the Eliminator slider in the race setup (the game's own: 600 points).":
+        'Najwyższy cel suwaka Eliminatora w ustawieniach wyścigu (w samej grze: 600 punktów).',
+}
+
+EXTRA['pt'].update({
+    'Player name': 'Nome do jogador',
+    'Your name in the game (profile, records). Up to 16 characters. Empty: Player.':
+        'Seu nome no jogo (perfil, recordes). Até 16 caracteres. Vazio: Player.',
+})
+EXTRA['es'].update({
+    'Player name': 'Nombre del jugador',
+    'Your name in the game (profile, records). Up to 16 characters. Empty: Player.':
+        'Tu nombre en el juego (perfil, récords). Hasta 16 caracteres. Vacío: Player.',
+})
+EXTRA['pl'].update({
+    'Player name': 'Nazwa gracza',
+    'Your name in the game (profile, records). Up to 16 characters. Empty: Player.':
+        'Twoja nazwa w grze (profil, rekordy). Do 16 znaków. Puste: Player.',
+})
+
+EXTRA['pt'].update({
+    '7788 unless you have a reason to change it. The next free one is taken when it is in use.':
+        '7788, a menos que você tenha um motivo para mudar. Se estiver em uso, a próxima livre é usada.',
+    'Could not set up online play: {}':
+        'Não foi possível preparar o jogo online: {}',
+    'Enter the join code your friend sees when they host. Check it for typos.':
+        'Digite o código que seu amigo vê ao hospedar. Confira se não há erros.',
+    'Hosting on port {}. Join code: {}':
+        'Hospedando na porta {}. Código: {}',
+    'Hosting. Your join code is {} (copied).':
+        'Hospedando. Seu código é {} (copiado).',
+    'I want to':
+        'Quero',
+    'Join code':
+        'Código da partida',
+    'Looking for the host…':
+        'Procurando o anfitrião…',
+    'No internet address was found. Only players on your network can join.':
+        'Nenhum endereço de internet foi encontrado. Só jogadores da sua rede podem entrar.',
+    'Off: the game plays offline. On: PLAY connects it, and its ONLINE menu works.':
+        'Desligado: o jogo roda offline. Ligado: JOGAR o conecta, e o menu ONLINE funciona.',
+    'On: start at once, using pipeline binaries on demand or loading shaders in the background. Off: wait on the loading screen for saved pipelines without disabling the binary cache. New areas can still need shader compilation.':
+        'Ligado: começa de imediato, usando binários de pipeline sob demanda ou carregando shaders em segundo plano. Desligado: espera na tela de carregamento pelos pipelines salvos, sem desativar o cache de binários. Áreas novas ainda podem precisar compilar shaders.',
+    'Online':
+        'Online',
+    'Online, this is your name too (see the Online page).':
+        'Online, este também é o seu nome (veja a página Online).',
+    'Online: hosting':
+        'Online: hospedando',
+    'Online: joining a friend':
+        'Online: entrando na partida de um amigo',
+    'Opening the port on your router…':
+        'Abrindo a porta no seu roteador…',
+    'Other players see you as {}. This is the Player name of the Game page too.':
+        'Os outros jogadores veem você como {}. Este também é o nome do jogador da página Jogo.',
+    'Play online':
+        'Jogar online',
+    'Players outside your home cannot reach you: your internet provider or a second router shares one public address, so no port can be opened here. Players on your network can join. Ask your provider for a public address, let a friend host, or use a virtual LAN such as Tailscale.':
+        'Jogadores fora da sua casa não conseguem alcançar você: seu provedor ou um segundo roteador compartilha um único endereço público, então nenhuma porta pode ser aberta aqui. Jogadores da sua rede podem entrar. Peça um endereço público ao provedor, deixe um amigo hospedar ou use uma LAN virtual como o Tailscale.',
+    'Port':
+        'Porta',
+    'Press PLAY. Then in the game: ONLINE, Join Game.':
+        'Clique em JOGAR. Depois, no jogo: ONLINE, Join Game.',
+    "Press PLAY. Your router's port opens automatically and your join code appears here, copied and ready to send. Then in the game: ONLINE, Create Game.":
+        'Clique em JOGAR. A porta do roteador abre automaticamente e seu código aparece aqui, copiado e pronto para enviar. Depois, no jogo: ONLINE, Create Game.',
+    'Races with other players over the internet.':
+        'Corridas com outros jogadores pela internet.',
+    'Router: {}':
+        'Roteador: {}',
+    'The code holds your internet address: send it to people you want to play with. Hosting asks a public STUN server what that address is. If Windows asks about the firewall, allow access.':
+        'O código contém seu endereço de internet: envie-o a quem você quer jogar junto. Ao hospedar, um servidor STUN público é consultado para saber esse endereço. Se o Windows perguntar sobre o firewall, permita o acesso.',
+    'The host does not answer yet. Their game has to be running, with this code.\n\nStart the game anyway? You can join from its ONLINE menu once they are ready.':
+        'O anfitrião ainda não responde. O jogo dele precisa estar aberto, com este código.\n\nIniciar o jogo mesmo assim? Você pode entrar pelo menu ONLINE quando ele estiver pronto.',
+    "Your friend sees this code when they host. A server's address works here too.":
+        'Seu amigo vê este código ao hospedar. O endereço de um servidor também funciona aqui.',
+    'Your router did not open the port automatically. Turn on UPnP in its settings, or forward port {port} (TCP and UDP) to this PC, {lan}. Until then only players on your network can join.':
+        'Seu roteador não abriu a porta automaticamente. Ative o UPnP nas configurações dele ou encaminhe a porta {port} (TCP e UDP) para este PC, {lan}. Até lá, só jogadores da sua rede podem entrar.',
+    'Your router opened port {port} automatically. Friends can join with this code.':
+        'Seu roteador abriu a porta {port} automaticamente. Seus amigos podem entrar com este código.',
+})
+
+EXTRA['es'].update({
+    '7788 unless you have a reason to change it. The next free one is taken when it is in use.':
+        '7788, salvo que tengas un motivo para cambiarlo. Si está en uso, se usa el siguiente libre.',
+    'Could not set up online play: {}':
+        'No se pudo preparar el juego en línea: {}',
+    'Enter the join code your friend sees when they host. Check it for typos.':
+        'Escribe el código que ve tu amigo al alojar la partida. Comprueba que no tenga errores.',
+    'Hosting on port {}. Join code: {}':
+        'Alojando en el puerto {}. Código: {}',
+    'Hosting. Your join code is {} (copied).':
+        'Alojando. Tu código es {} (copiado).',
+    'I want to':
+        'Quiero',
+    'Join code':
+        'Código de partida',
+    'Looking for the host…':
+        'Buscando al anfitrión…',
+    'No internet address was found. Only players on your network can join.':
+        'No se encontró ninguna dirección de internet. Solo pueden unirse jugadores de tu red.',
+    'Off: the game plays offline. On: PLAY connects it, and its ONLINE menu works.':
+        'Desactivado: el juego funciona sin conexión. Activado: JUGAR lo conecta y su menú ONLINE funciona.',
+    'On: start at once, using pipeline binaries on demand or loading shaders in the background. Off: wait on the loading screen for saved pipelines without disabling the binary cache. New areas can still need shader compilation.':
+        'Activado: empieza de inmediato, usando binarios de pipeline bajo demanda o cargando shaders en segundo plano. Desactivado: espera en la pantalla de carga a los pipelines guardados, sin desactivar la caché de binarios. Las zonas nuevas aún pueden necesitar compilar shaders.',
+    'Online':
+        'En línea',
+    'Online, this is your name too (see the Online page).':
+        'En línea, este también es tu nombre (mira la página En línea).',
+    'Online: hosting':
+        'En línea: alojando',
+    'Online: joining a friend':
+        'En línea: uniéndote a un amigo',
+    'Opening the port on your router…':
+        'Abriendo el puerto en tu router…',
+    'Other players see you as {}. This is the Player name of the Game page too.':
+        'Los demás jugadores te ven como {}. También es el nombre de jugador de la página Juego.',
+    'Play online':
+        'Jugar en línea',
+    'Players outside your home cannot reach you: your internet provider or a second router shares one public address, so no port can be opened here. Players on your network can join. Ask your provider for a public address, let a friend host, or use a virtual LAN such as Tailscale.':
+        'Los jugadores de fuera de tu casa no pueden llegar a ti: tu proveedor o un segundo router comparte una sola dirección pública, así que aquí no se puede abrir ningún puerto. Los jugadores de tu red sí pueden unirse. Pide a tu proveedor una dirección pública, deja que aloje un amigo o usa una LAN virtual como Tailscale.',
+    'Port':
+        'Puerto',
+    'Press PLAY. Then in the game: ONLINE, Join Game.':
+        'Pulsa JUGAR. Luego, en el juego: ONLINE, Join Game.',
+    "Press PLAY. Your router's port opens automatically and your join code appears here, copied and ready to send. Then in the game: ONLINE, Create Game.":
+        'Pulsa JUGAR. El puerto del router se abre automáticamente y tu código aparece aquí, copiado y listo para enviar. Luego, en el juego: ONLINE, Create Game.',
+    'Races with other players over the internet.':
+        'Carreras con otros jugadores por internet.',
+    'Router: {}':
+        'Router: {}',
+    'The code holds your internet address: send it to people you want to play with. Hosting asks a public STUN server what that address is. If Windows asks about the firewall, allow access.':
+        'El código contiene tu dirección de internet: envíalo a quienes quieras invitar. Al alojar se consulta a un servidor STUN público cuál es esa dirección. Si Windows pregunta por el firewall, permite el acceso.',
+    'The host does not answer yet. Their game has to be running, with this code.\n\nStart the game anyway? You can join from its ONLINE menu once they are ready.':
+        'El anfitrión aún no responde. Su juego tiene que estar abierto, con este código.\n\n¿Iniciar el juego de todos modos? Podrás unirte desde su menú ONLINE cuando esté listo.',
+    "Your friend sees this code when they host. A server's address works here too.":
+        'Tu amigo ve este código al alojar. La dirección de un servidor también sirve aquí.',
+    'Your router did not open the port automatically. Turn on UPnP in its settings, or forward port {port} (TCP and UDP) to this PC, {lan}. Until then only players on your network can join.':
+        'Tu router no abrió el puerto automáticamente. Activa UPnP en sus ajustes o redirige el puerto {port} (TCP y UDP) a este PC, {lan}. Hasta entonces solo pueden unirse jugadores de tu red.',
+    'Your router opened port {port} automatically. Friends can join with this code.':
+        'Tu router abrió el puerto {port} automáticamente. Tus amigos pueden unirse con este código.',
+})
+
+EXTRA['pt'].update({
+    'Host a game': 'Hospedar uma partida',
+    'Join a friend': 'Entrar na partida de um amigo',
+})
+
+EXTRA['es'].update({
+    'Host a game': 'Alojar una partida',
+    'Join a friend': 'Unirme a un amigo',
 })
 
 _tables = {}

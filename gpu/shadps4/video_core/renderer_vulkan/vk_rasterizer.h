@@ -7,6 +7,7 @@
 #include <map>
 #include <unordered_map>
 
+#include "gow3_tls.h"
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -266,10 +267,12 @@ private:
     bool BindResources(const Pipeline* pipeline);
     void BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,
                       Shader::Backend::Bindings& binding, u32& write_index);
-    /// gow3: a stage's resolved textures remembered by its prepared T# hashes
-    /// (TextureSetMemo): a hit only redoes the per-draw effects (binding flags, transitions).
+    /// gow3: a stage's resolved textures remembered by its T# hashes, a worker's or the GPU
+    /// thread's (TextureSetMemo): a hit only redoes the per-draw effects (binding flags,
+    /// transitions).
     struct TextureSetEntry {
         VideoCore::ImageId id{}; ///< after the depth redirect; null descriptor when invalid
+        VideoCore::ImageId found_id{}; ///< before the depth redirect (GetAssociatedDepth)
         vk::ImageView view;
         const void* backing = nullptr;
         VideoCore::SubresourceRange range;
@@ -288,9 +291,13 @@ private:
     std::array<TextureSet, 32768> texture_sets{};
     u64 texture_set_hits = 0, texture_set_misses = 0;
     std::array<u64, 4> texture_set_why{}; ///< misses: other key, generation, image check, new
-    /// Returns true when the stage's images were bound from the memo.
-    bool BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
-                             u32 first_image_idx, bool& barrier, TextureSet*& slot);
+    /// gow3: whether a stage's textures may come from the texture-set memo at all.
+    bool TextureSetCandidate(const Shader::Info& stage) const;
+    /// Returns true when the stage's images were bound from the memo. `hashes` are the stage's
+    /// ImageDescHash values: a draw-preparation worker's, or the GPU thread's own at 0 workers;
+    /// null skips the memo.
+    bool BindTexturesFromSet(const Shader::Info& stage, const u64* hashes, u32 first_image_idx,
+                             bool& barrier, TextureSet*& slot);
     /// The prepared sharps of `stage` in the current prepared draw, if they fit it.
     const PreparedStage* FindPreparedStage(const Shader::Info& stage) const;
     /// Whether the helper may bind textures for this pipeline at all (fixed descriptor layout,
@@ -342,6 +349,7 @@ private:
     std::unique_ptr<CameraMotion> camera_motion; // gow3: motion vectors (docs/upscaler.md)
     std::unique_ptr<SceneTargets> scene_targets;
     bool scene_started = false;
+    bool scene_native_seen = false; ///< #211: WipEout's scene pass gave the scene size
     std::unique_ptr<ObjectMotion> object_motion;
     bool motion_draw = false;
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
@@ -352,7 +360,7 @@ private:
     /// GOW3_HUD_16X9: a HUD draw's window x becomes x * [0] + [1] (GOW3_HUD_ASPECT in the middle of a
     /// wider buffer)
     std::array<float, 2> hud_x{1.0f, 0.0f};
-    /// The same for y: across the full width of a taller buffer
+    /// and its window y, y * [0] + [1], in a taller one (16:10, #95)
     std::array<float, 2> hud_y{1.0f, 0.0f};
     VAddr hud_buffer = 0;  ///< display buffer the HUD draws are counted in
     /// GOW3_STEREO: the full-size depth written last (the scene's), copied for the next display
@@ -367,6 +375,17 @@ private:
     std::unique_ptr<StereoDepth> stereo_depth;
     std::map<VideoCore::ImageId, std::array<u32, 2>> stereo_debug_targets; ///< draws, writing
     u32 hud_draws = 0;     ///< draws into hud_buffer; the first one is the scene
+    /// shaders of hud_buffer's first draw: later draws with them are scenes too (split screen)
+    decltype(GraphicsPipelineKey::stage_hashes) hud_scene_hashes{};
+    /// HDR output: the game's own buffer for scene and HUD, copied to the display buffer by one
+    /// draw a frame (learned from the draws, see PrepareRenderState)
+    VAddr hdr_hud_buffer = 0;
+    VAddr hdr_source = 0;     ///< candidate for hdr_hud_buffer from the previous display buffer
+    VAddr display_buffer = 0; ///< display buffer drawn into last
+    VAddr display_source = 0; ///< target drawn last before display_buffer's first draw
+    u32 display_draws = 0;    ///< draws into display_buffer
+    VAddr prev_target = 0;    ///< color target of the previous draw
+    bool hud_draw = false; ///< the current draw is a HUD draw (GOW3_HUD_16X9 counting)
     const bool host_markers_enabled;
     const bool guest_markers_enabled;
 
@@ -505,8 +524,8 @@ private:
     bool needs_barrier{};
     // gow3: two-stage draw pipeline (stage B state; the thread is the last member so it
     // stops first).
-    static inline thread_local const AmdGpu::Regs* stage_regs = nullptr;
-    static inline thread_local const AmdGpu::ComputeProgram* stage_cs = nullptr;
+    static inline thread_local const AmdGpu::Regs* stage_regs GOW3_TLS_INITIAL_EXEC = nullptr;
+    static inline thread_local const AmdGpu::ComputeProgram* stage_cs GOW3_TLS_INITIAL_EXEC = nullptr;
     AmdGpu::Regs pipe_regs{};
     bool pipe_synced = false;
     std::array<AmdGpu::CbDbExtent, AmdGpu::NUM_COLOR_BUFFERS> pipe_cb_extent{};
@@ -537,6 +556,10 @@ private:
         u32 count;
     };
     std::array<RingStage, Shader::MaxStageTypes> ring_stages{};
+    /// PostDraw's per-stage constant ring bindings (stage A only; was thread_local: 0.7 % of
+    /// the command thread in __tls_get_addr at the pack start).
+    std::array<boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>,
+               Shader::MaxStageTypes> post_rings;
     u32 num_ring_stages = 0;
     const RingBinding* FindRingBinding(const Shader::Info& stage, u32 index) const {
         for (u32 i = 0; i < num_ring_stages; ++i) {

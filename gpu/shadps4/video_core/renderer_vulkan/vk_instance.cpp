@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <ctime>
 #include <cstdlib>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
@@ -192,7 +195,7 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
                VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
                VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
 
-    CreateDevice();
+    CreateDevice(window_info.type != Frontend::WindowSystemType::Headless);
     CollectPhysicalMemoryInfo();
     CollectImageFormatInfo();
     CollectToolingInfo();
@@ -227,7 +230,32 @@ bool PipelineBinaryCacheRequested() {
     const char* setting = std::getenv("GOW3_PIPELINE_BINARIES");
     return !setting || *setting != '0';
 }
+/// gow3: NVIDIA returns a 2 MB compression dictionary with every pipeline's binaries and keeps a
+/// copy of it in each pipeline restored from them: about 2 MiB of commit a pipeline. A warm-up of
+/// 9,168 pipelines on an RTX 5090 ended at 22.6 GB of private commit with the binary cache and
+/// 3.2 GB without, and was no faster (4.2 s vs 3.7 s): the driver's own shader cache builds them
+/// as quickly. GOW3_PIPELINE_BINARIES_NVIDIA=1 keeps the binary cache there.
+bool PipelineBinariesForVendor(u32 vendor_id) {
+    constexpr u32 Nvidia = 0x10DE;
+    const char* keep = std::getenv("GOW3_PIPELINE_BINARIES_NVIDIA");
+    if (vendor_id != Nvidia || (keep && *keep && *keep != '0')) {
+        return true;
+    }
+    std::printf("Pipeline binary cache: off on NVIDIA (the driver keeps a 2 MB copy in every "
+                "pipeline restored from binaries; GOW3_PIPELINE_BINARIES_NVIDIA=1 keeps it)\n");
+    return false;
 }
+}
+
+#ifdef _WIN32
+// NVIDIA's global-key query clobbers Win64's nonvolatile RDI; preserve it at the API boundary.
+__attribute__((noinline)) static vk::Result QueryGlobalPipelineKey(vk::Device device,
+                                                                vk::PipelineBinaryKeyKHR& key) {
+    const auto result = device.getPipelineKeyKHR(nullptr, &key);
+    __asm__ volatile("" ::: "rdi");
+    return result;
+}
+#endif
 
 bool InitializePipelineBinaryCache(vk::Device device, bool supported,
                                    vk::PipelineBinaryKeyKHR& global_key) {
@@ -247,7 +275,11 @@ bool InitializePipelineBinaryCache(vk::Device device, bool supported,
         LOG_WARNING(Render_Vulkan, "Pipeline binary cache functions unavailable; using normal compilation");
         return false;
     }
+#ifdef _WIN32
+    const auto result = QueryGlobalPipelineKey(device, global_key);
+#else
     const auto result = device.getPipelineKeyKHR(nullptr, &global_key);
+#endif
     if (result != vk::Result::eSuccess || !global_key.keySize ||
         global_key.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) {
         const auto key_size = global_key.keySize;
@@ -261,7 +293,7 @@ bool InitializePipelineBinaryCache(vk::Device device, bool supported,
     return true;
 }
 
-bool Instance::CreateDevice() {
+bool Instance::CreateDevice(bool needs_swapchain) {
     const vk::StructureChain feature_chain = physical_device.getFeatures2<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
         vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
@@ -310,8 +342,12 @@ bool Instance::CreateDevice() {
     };
 
     // Required
-    ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
-               "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    // A headless instance has no VK_KHR_surface. Enabling swapchain without its
+    // required instance extension is invalid, even when no swapchain is created.
+    if (needs_swapchain) {
+        ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
+                   "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
     ASSERT_MSG(add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     ASSERT_MSG(add_extension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME),
@@ -330,7 +366,8 @@ bool Instance::CreateDevice() {
 
     // Optional
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
-    pipeline_binaries = PipelineBinaryCacheRequested() && maintenance_5 &&
+    pipeline_binaries = PipelineBinaryCacheRequested() &&
+        PipelineBinariesForVendor(properties.vendorID) && maintenance_5 &&
         feature_chain.get<vk::PhysicalDeviceMaintenance5FeaturesKHR>().maintenance5 &&
         feature_chain.get<vk::PhysicalDevicePipelineBinaryFeaturesKHR>().pipelineBinaries &&
         add_extension(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
@@ -379,6 +416,15 @@ bool Instance::CreateDevice() {
                     fragment_shader_barycentric ? "VK_KHR_fragment_shader_barycentric" : "none");
     }
     provoking_vertex = add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+    // gow3: what the driver knows about a device loss (LogDeviceFault).
+    if (std::ranges::any_of(available_extensions, [](const auto& name) {
+            return name == VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
+        })) {
+        const auto fault_chain = physical_device.getFeatures2<
+            vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceFaultFeaturesEXT>();
+        device_fault = fault_chain.get<vk::PhysicalDeviceFaultFeaturesEXT>().deviceFault &&
+                       add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    }
     shader_stencil_export = add_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
     amd_gcn_shader = !amd_paths_off.shaderext && add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
@@ -676,7 +722,13 @@ bool Instance::CreateDevice() {
         vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR{
             .pipelineExecutableInfo = pipeline_executable_features.pipelineExecutableInfo,
         },
+        vk::PhysicalDeviceFaultFeaturesEXT{
+            .deviceFault = true,
+        },
     };
+    if (!device_fault) {
+        device_chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
+    }
     if (!pipeline_executable_properties) {
         device_chain.unlink<vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR>();
     }
@@ -793,6 +845,71 @@ bool Instance::CreateDevice() {
     return true;
 }
 
+void Instance::LogDeviceFault() const {
+    static std::atomic_flag reported = ATOMIC_FLAG_INIT;
+    if (reported.test_and_set()) {
+        return;
+    }
+    if (!device_fault || !VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT) {
+        std::printf("Device fault: the driver does not report device losses (VK_EXT_device_fault)\n");
+        std::fflush(stdout);
+        return;
+    }
+    VkDeviceFaultCountsEXT counts{VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+    VkResult result = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT(*device, &counts, nullptr);
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+        std::printf("Device fault: no report (%s)\n", vk::to_string(vk::Result(result)).c_str());
+        std::fflush(stdout);
+        return;
+    }
+    std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+    std::vector<VkDeviceFaultVendorInfoEXT> vendor(counts.vendorInfoCount);
+    std::vector<u8> binary(counts.vendorBinarySize);
+    VkDeviceFaultInfoEXT info{VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+    info.pAddressInfos = addresses.data();
+    info.pVendorInfos = vendor.data();
+    info.pVendorBinaryData = binary.empty() ? nullptr : binary.data();
+    result = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT(*device, &counts, &info);
+    std::printf("Device fault: %s (%u addresses, %u vendor records, %llu bytes of vendor data)\n",
+                info.description, counts.addressInfoCount, counts.vendorInfoCount,
+                (unsigned long long)counts.vendorBinarySize);
+    static constexpr const char* kinds[] = {"none", "read invalid", "write invalid",
+                                            "execute invalid", "instruction pointer unknown",
+                                            "instruction pointer invalid",
+                                            "instruction pointer fault"};
+    for (u32 i = 0; i < counts.addressInfoCount; ++i) {
+        const auto& a = addresses[i];
+        const u32 kind = static_cast<u32>(a.addressType);
+        // The address is known to within this power of two: the range it lies in.
+        const u64 precision = a.addressPrecision ? a.addressPrecision : 1;
+        const u64 low = a.reportedAddress & ~(precision - 1);
+        std::printf("  address %#llx (%s), somewhere in %#llx-%#llx\n",
+                    (unsigned long long)a.reportedAddress, kind < 7 ? kinds[kind] : "?",
+                    (unsigned long long)low,
+                    (unsigned long long)(low + precision - 1));
+    }
+    // The driver's own crash dump (on NVIDIA one that Nsight Graphics opens), kept beside the log.
+    if (!binary.empty() && result == VK_SUCCESS) {
+        const std::time_t now = std::time(nullptr);
+        char name[64];
+        std::strftime(name, sizeof(name), "user/device_fault_%Y%m%d_%H%M%S.nv-gpudmp",
+                      std::localtime(&now));
+        if (std::FILE* file = std::fopen(name, "wb")) {
+            std::fwrite(binary.data(), 1, binary.size(), file);
+            std::fclose(file);
+            std::printf("  driver crash dump saved to %s\n", name);
+        } else {
+            std::printf("  driver crash dump could not be saved to %s\n", name);
+        }
+    }
+    for (u32 i = 0; i < counts.vendorInfoCount; ++i) {
+        std::printf("  vendor: %s (code %#llx, data %#llx)\n", vendor[i].description,
+                    (unsigned long long)vendor[i].vendorFaultCode,
+                    (unsigned long long)vendor[i].vendorFaultData);
+    }
+    std::fflush(stdout);
+}
+
 void Instance::CreateAllocator() {
     const VmaVulkanFunctions functions = {
         .vkGetInstanceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
@@ -803,6 +920,10 @@ void Instance::CreateAllocator() {
         .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
         .physicalDevice = physical_device,
         .device = *device,
+        // gow3: 64 MiB instead of VMA's default 256 MiB per memory block. A new block is cleared by
+        // the driver when it is allocated, which stalled the frame that needed it by up to ~40 ms;
+        // smaller blocks spread that cost over several frames.
+        .preferredLargeHeapBlockSize = 64ull << 20,
         .pVulkanFunctions = &functions,
         .instance = *instance,
         .vulkanApiVersion = TargetVulkanApiVersion,

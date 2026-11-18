@@ -7,7 +7,7 @@
 // Renderer tests have no guest process. Clock/host-thread services work; guest accesses abort.
 extern "C" {
 thread_local sigjmp_buf* runtime_fault_recover = nullptr;
-uint32_t runtime_disabled_optimizations = 0;
+uint64_t runtime_disabled_optimizations = 0; // gow3_toggles.h: 64 bits
 uint64_t runtime_tsc_frequency() { return 1000000000; }
 int runtime_file_translate(const char*, char*, size_t) { std::abort(); }
 uint64_t runtime_memory_clamp(uintptr_t, uint64_t) { std::abort(); }
@@ -17,6 +17,15 @@ void runtime_memory_set_gpu_hooks(void (*)(uintptr_t, uint64_t),
     void (*)(uintptr_t, uint64_t), void (*)(uintptr_t, uint64_t)) { std::abort(); }
 void runtime_thread_attach_host(const char*) {}
 void runtime_memory_gpu_protect(uintptr_t, uint64_t, int, int) { std::abort(); }
+int runtime_music_songs() { std::abort(); }
+const char* runtime_music_song(int) { std::abort(); }
+const char* runtime_music_folder() { std::abort(); }
+int runtime_music_playing() { std::abort(); }
+void runtime_music_play(int) { std::abort(); }
+void runtime_music_step(int) { std::abort(); }
+int runtime_music_in_race(void) { return 1; }
+int runtime_wipeout_paused(void) { return 0; }
+void runtime_set_target_fps(double) {}
 void runtime_restart() { std::abort(); }
 void runtime_report() {}
 uint64_t runtime_process_time_counter() { return runtime_process_time_us() * 1000; }

@@ -190,7 +190,12 @@ def main():
                                                env.get('GOW3_MODS_CONFIG', data / 'mods.json'),
                                                env.get('GOW3_MODS_ENABLED', '1') != '0',
                                                env.get('GOW3_GAME_DIR', PORT.parent / 'CUSA01623'))
-    extra_resolutions = [s for s in patches.resolution_names(mod_patch_files) if s not in graphics_options.RESOLUTIONS]
+    # A game's own sizes beyond the shared list (WipEout's 2880x1800, #110) come from its profile.
+    import game_profiles
+    own = game_profiles.PROFILES.get(patches.game_title_id(env.get('GOW3_GAME_DIR', PORT.parent / 'CUSA01623')), {})
+    own = own.get('env', {}).get('GOW3_ALLOWED_RESOLUTIONS', '').split(';')
+    extra_resolutions = list(dict.fromkeys(s for s in [*patches.resolution_names(mod_patch_files), *own]
+                                           if s and s not in graphics_options.RESOLUTIONS))
     env['GOW3_EXTRA_RESOLUTIONS'] = ';'.join(extra_resolutions)
     derived.append('GOW3_EXTRA_RESOLUTIONS')
     graphics, reverted = graphics_options.prepare(env['GOW3_CONFIG'], out / 'graphics_state.json', extra_resolutions)
@@ -221,14 +226,18 @@ def main():
     if not (game / 'eboot.bin').is_file():
         fail(f'No eboot.bin in {game} (set GOW3_GAME_DIR).')
     update_view = None
+    unlinked = {}  # large files a drive without links kept out of the view: the game reads them in place
     if env.get('GOW3_PATCH_DIR'):
         import game_update
         try:
-            update_view = game_update.create_view(game, env['GOW3_PATCH_DIR'], out)
+            update_view = game_update.create_view(game, env['GOW3_PATCH_DIR'], out, unlinked)
         except (ValueError, OSError) as error:
             fail(str(error))
         game = update_view
         print(f'Game and update combined from {env["GOW3_PATCH_DIR"]}', flush=True)
+        if unlinked:
+            print(f'Game and update: this drive cannot link files; {len(unlinked)} large files are read '
+                  'from their folders', flush=True)
     original_game = game.resolve()
     game = Path(run_script('mods.py', game, '--out', out,
                            '--mods-dir', env.get('GOW3_MODS_DIR', data / 'mods'),
@@ -244,7 +253,8 @@ def main():
             print(f'Game profile: {profile["name"]} ({", ".join(profile["modules"])})', flush=True)
         for name, value in profile.get('env', {}).items():
             env.setdefault(name, value)
-        run_script('link_modules.py', game, '--out', out, '--modules', *profile['modules'])
+        run_script('link_modules.py', game, '--out', out, '--modules', *profile['modules'],
+                   '--reserve', str(profile.get('reserve', 0)))
         if WINDOWS:  # function starts for the loader's red-zone protection (src/redzone.cpp)
             run_script('function_starts.py', game, '--out', out, '--modules', *profile['modules'])
         # A failed rewrite prints its reason and the game starts without the table.
@@ -256,6 +266,9 @@ def main():
             if code == 0:
                 isa_args = ['--isa-rewrite', str(out / 'isa-rewrite.bin')]
         run_script('content_profile.py', game, '--out', out, '--sku', env.get('GOW3_CONTENT_SKU', 'full'))
+        run_script('menu_patches.py', game, '--out', out,  # Eliminator target slider limit (#89)
+                   '--limit', env.get('GOW3_ELIMINATOR_LIMIT', '2000'))
+        env['GOW3_FILE_PATCHES'] = str(out / 'file_patches.txt')
 
         from patches import game_profile_for, patch_requirements, patch_status, selected_patches
         profile = game_profile_for(game)
@@ -308,7 +321,8 @@ def main():
             # leaves the engine at 60 FPS, and the notes' memory and VBlank needs follow the same list.
             applied = (patch_status(out) or {}).get('applied', [])
             engine_fps = graphics_options.applied_engine_fps(applied)
-            dmem, vblank = patch_requirements(patch_xml, applied, profile[2])
+            dmem, vblank = patch_requirements(patch_xml, applied, profile[2],
+                                              neo=env.get('GOW3_NEO', '').startswith('1'))
             for key, value in (('GOW3_DMEM_MB', dmem), ('GOW3_VBLANK_HZ', vblank)):
                 if value and key not in env:
                     env[key] = str(value)
@@ -331,6 +345,8 @@ def main():
             env['GOW3_GLYPHS'] = glyph_style
             derived.append('GOW3_GLYPHS')
         mount_args = glyph_args + pause_menu_args(game, out, glyph_args)
+        for link, target in unlinked.items():
+            mount_args += ['--mount', f'/app0/{Path(link).relative_to(update_view).as_posix()}={target}']
         env['GOW3_DERIVED'] = ','.join(derived)
         # The guest memory pool is committed in full at start: a resolution patch above 1080p
         # can need more than 16 GB of RAM, and the game then closes when the page file cannot grow.
@@ -348,7 +364,7 @@ def main():
         env.setdefault('GOW3_GPU_USER_DIR', str(user_dir))
         from save_backup import backup
         try:
-            if made := backup(user_dir):
+            if made := backup(user_dir, savedata=env.get('GOW3_SAVEDATA_DIR')):
                 print(f'Saves backed up to {made}', flush=True)
         except OSError as error:
             print(f'Save backup failed, starting anyway: {error}', flush=True)
@@ -362,12 +378,21 @@ def main():
                    '--patches', str(out / 'patches.bin'), '--app0', str(game),
                    '--user', str(user_dir),
                    '--timeout', env.get('GOW3_TIMEOUT', '0'), *isa_args, *mount_args, *args]
+        # Discord Rich Presence: the runtime writes the game's state (menus, race, track, mode, online
+        # room, song) to this file, and the client beside the game publishes it (scripts/discord_presence.py).
+        presence_file = None
+        env.pop('GOW3_PRESENCE_FILE', None)
+        if discord_presence and env.get('GOW3_DISCORD') != '0':
+            presence_file = out / 'presence.json'
+            for stale in (presence_file, out / 'presence.json.tmp'):
+                stale.unlink(missing_ok=True)
+            env['GOW3_PRESENCE_FILE'] = str(presence_file)
         # No stdin: an inherited pipe (shells such as Git Bash) cost the game its console output.
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, creationflags=no_console())
         presence = None
         try:
             try:
-                presence = discord_presence.Presence(pid=process.pid) if discord_presence else None
+                presence = discord_presence.Presence(pid=process.pid, state_file=presence_file) if discord_presence else None
             except (OSError, RuntimeError):
                 print('Discord presence unavailable; the game will continue', flush=True)
             status = process.wait()

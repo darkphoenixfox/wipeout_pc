@@ -60,6 +60,11 @@ enum : std::uint64_t {
     OrderedGuestWrites = 1ull << 49,
     SceneHalfRes = 1ull << 50, ///< live scaling also reduces the 960x540 post targets
     UpdateImageFastPath = 1u << 30,
+    /// TAA shortcuts that keep the image (vk_temporal_upscaler.cpp RecordTaa): the resolve built
+    /// without the A/B switches below while all of them are at their default, and the sharpen pass
+    /// writing the scene color itself instead of an image a third pass copies into it. Bit set:
+    /// both off (the old passes).
+    TaaFastPaths = 1ull << 31,
     // TAA A/B in one run: optional techniques, off by default (no measured gain, 2026-10-02).
     TaaTonemapBlend = 1ull << 51,
     TaaClip = 1ull << 52,
@@ -68,10 +73,28 @@ enum : std::uint64_t {
     // On by default (bit set: off): history of a thin feature this jitter phase missed is kept
     // when nothing moves. Static-camera flicker of railings/window bars p99.9 -45% (2026-10-03).
     TaaKeepNearerHistory = 1ull << 55,
+    /// WipEout's three-target scene pass starts the reduced-size scene; bit set: off, for A/B runs.
+    WipeoutSceneRaster = 1ull << 56,
     SceneMipBias = 1ull << 57, ///< negative LOD bias of G-buffer samplers at reduced scene sizes
     /// A texture/storage request for the top rows of a cached image (same address and layout)
     /// uses that image, instead of creating and uploading a new one (texture_cache.cpp).
     PartialHeightViews = 1ull << 58,
+    /// An image only the CPU writes, written again in the flip it was re-uploaded in (a texture
+    /// the game streams into while draws bind it), stays unprotected until the next flip instead
+    /// of being re-protected and re-uploaded whole at every bind (TextureCache::InvalidateMemory).
+    DeferStreamedImageTracking = 1ull << 59,
+    /// Up to 512 GPU readbacks pending instead of 64; when full, only the oldest is waited for
+    /// instead of the whole GPU (TextureCache::ProcessDownloadImages).
+    DeepReadbackQueue = 1ull << 60,
+    /// An end-of-pipe/-shader event with no image queued for download does not wait for the
+    /// Vulkan recording thread (TextureCache::ProcessDownloadImages).
+    EmptyDownloadNoWait = 1ull << 61,
+    /// End-of-shader fences (EOS) on the draw recording thread are written by the Vulkan
+    /// recording thread after the copies before them, as RecorderFences does for EOP.
+    RecorderEos = 1ull << 62,
+    /// On-demand pipeline startup reads saved shader permutations from the store instead of
+    /// translating them again, and skips rewriting saved pipeline keys (vk_pipeline_cache.cpp).
+    DiskShaders = 1ull << 63,
     // Bits 20-29 are used as raw debug toggles by the camera/object motion and the upscaler.
 };
 inline bool Disabled(std::uint64_t bit) {
@@ -89,7 +112,24 @@ inline std::atomic<std::uint64_t> image_upload_bytes{0};
 inline std::atomic<std::uint64_t> buffer_upload_bytes{0};
 inline std::atomic<int> gpu_thread_clock{-1}; ///< clockid_t of the GPU command thread
 inline std::atomic<unsigned long> gpu_thread_id{0}; ///< Windows thread id of the GPU command thread
+/// Windows thread id of the draw recording thread (DrawPipe stage B), for GOW3_CPU_PROFILE.
+inline std::atomic<unsigned long> draw_rec_thread_id{0};
+/// Windows thread id of the scheduler's Vulkan recording thread (GOW3_CPU_PROFILE).
+inline std::atomic<unsigned long> vk_recorder_thread_id{0};
+/// TSC cycles the GPU command thread waited in DrawPipe::Drain for stage B (all time).
+inline std::atomic<std::uint64_t> pipe_drain_cycles{0};
+/// TSC cycles the draw recording thread (DrawPipe stage B) spent running packets (all time).
+inline std::atomic<std::uint64_t> pipe_busy_cycles{0};
 inline std::atomic<std::uint64_t> draws{0}, dispatches{0}, submissions{0};
+/// Graphics memory by owner (GOW3_FRAME_STATS prints them once a second): images (bytes and
+/// count), device memory backing guest buffers, staging buffers.
+inline std::atomic<std::int64_t> image_bytes{0}, image_count{0}, resident_bytes{0}, staging_bytes{0};
+/// Staging by type (device, upload, download) and kind (ring blocks, large buffers), in MiB.
+inline std::atomic<std::int64_t> staging_mib[3][2]{};
+/// ProcessDownloadImages calls that waited for the recording thread, and those skipped (none queued).
+inline std::atomic<std::uint64_t> download_waits{0}, download_waits_skipped{0};
+/// End-of-shader events: handed to the recording thread, GDS stores (waited), others waited.
+inline std::atomic<std::uint64_t> eos_deferred{0}, eos_gds{0}, eos_waited{0};
 /// Frames the GPU command thread has started (display pass), for per-frame diagnostics.
 inline std::atomic<std::uint64_t> gpu_frames{0};
 /// Wall time spent in operations suspected of stalls (ns, all threads).

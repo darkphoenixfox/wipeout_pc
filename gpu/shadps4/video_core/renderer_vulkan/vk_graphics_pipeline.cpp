@@ -19,6 +19,7 @@
 #include "common/elf_info.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/renderer_vulkan/vk_warmup_inbox.h"
 
 namespace Vulkan {
 
@@ -141,7 +142,11 @@ GraphicsPipeline::GraphicsPipeline(
             .rasterizationSamples = LiverpoolToVK::NumSamples(
                 key.num_samples, instance.GetColorSampleCounts() & instance.GetDepthSampleCounts()),
             // gow3: GOW3_LIGHTING_TEST=shading keeps sample shading off (vk_lighting_test.h).
-            .sampleShadingEnable = !LightingTest::Current().shading &&
+            // A shader that interpolates at sample positions runs per sample only when DB_EQAA
+            // asks for it, as on the PS4. Always per sample, some WipEout liveries drawn with
+            // such a shader (see-through "sketch" hulls) vanished in the multisampled ship
+            // select on NVIDIA.
+            .sampleShadingEnable = !LightingTest::Current().shading && key.ps_iter_samples != 0 &&
                                    (fs_info.addr_flags.persp_sample_ena ||
                                     fs_info.addr_flags.linear_sample_ena),
         };
@@ -436,6 +441,14 @@ GraphicsPipeline::GraphicsPipeline(
     auto [pipeline_result, pipe] =
         CreateCachedGraphicsPipeline(device, pipeline_cache, pipeline_info, key,
                                      instance.GetPipelineBinaryGlobalKey(), binary_directory);
+    // gow3: a cached pipeline the driver refuses at the start (a damaged cache after a crash, or a
+    // driver error) stays out of the warm-up (Handle() is null) instead of stopping the game (#72).
+    if (pipeline_result != vk::Result::eSuccess && preloading) {
+        LOG_WARNING(Render_Vulkan, "Cached graphics pipeline {} not built ({}), left out of the warm-up",
+                    debug_str, vk::to_string(pipeline_result));
+        PreloadMemoryStop().Report(static_cast<int>(pipeline_result)); // #149
+        return;
+    }
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
@@ -451,6 +464,15 @@ GraphicsPipeline::GraphicsPipeline(
         auto [square_result, square] =
             CreateCachedGraphicsPipeline(device, pipeline_cache, square_info, key,
                                          instance.GetPipelineBinaryGlobalKey(), binary_directory);
+        // gow3: a refused squaring pass leaves the whole cached pipeline out (#72, #149).
+        if (square_result != vk::Result::eSuccess && preloading) {
+            LOG_WARNING(Render_Vulkan,
+                        "Cached squaring pass of {} not built ({}), left out of the warm-up",
+                        debug_str, vk::to_string(square_result));
+            PreloadMemoryStop().Report(static_cast<int>(square_result));
+            pipeline.reset();
+            return;
+        }
         ASSERT_MSG(square_result == vk::Result::eSuccess,
                    "Failed to create the squaring pipeline: {}", vk::to_string(square_result));
         square_pipeline = std::move(square);

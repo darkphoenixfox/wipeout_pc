@@ -74,6 +74,8 @@ int32_t runtime_guest_errno(int host_errno);
 void *runtime_low_map(size_t size, int prot);
 /* Windows: reserves the PS4 user address range as a placeholder (no-op elsewhere). */
 void runtime_memory_reserve(void);
+/* Creates the guest memory pool now (charged in full on Windows); 0 on success. Idempotent. */
+int runtime_memory_commit(void);
 uintptr_t runtime_ajm_resolve(const char *name);
 void runtime_ajm_report(void);
 /* AjmDecMp3ParseFrame (guest layout). */
@@ -93,15 +95,24 @@ void runtime_audio_report(void);
 /* Custom soundtrack (runtime_music.c): replaces one buffer of the game's BGM port with the
  * player's music; 0 = no music files, the game's music plays. */
 int runtime_music_bgm(float *pcm, int frames, int channels);
+/* A game file opened (runtime_file.c): its sound banks tell menus from races (#66). */
+void runtime_music_scene(const char *guest_path);
 uintptr_t runtime_pad_resolve(const char *name);
 void runtime_pad_report(void);
+extern volatile int runtime_pad_opened; /* the game opened a pad (start watch, #113) */
 /* probe --gamepad: prints one "Gamepad:" line for the first pad found (returns 1) or none (0). */
 int runtime_pad_describe(void);
+int runtime_pad_second_user(void);
+void runtime_user_events(void);
+void runtime_cube_budget_poll(void); /* WipEout: reflection cube faces follow the frame rate */
+void runtime_set_target_fps(double fps); /* the frame rate the present thread aims at */
 uintptr_t runtime_rtc_resolve(const char *name);
 const char *runtime_file_user_dir(void);
 void runtime_savedata_configure(const char *title);
 uintptr_t runtime_savedata_resolve(const char *name);
 void runtime_savedata_report(void);
+/* gow3: passes WipEout's GPU heap frees to the texture cache; GOW3_HEAP_TRACE=1 reports use. */
+void runtime_heap_trace_install(unsigned char *image, uint64_t size);
 /* OrbisSaveDataParam (1328 bytes) of a save directory of the current title. */
 #define RUNTIME_SAVE_PARAM_SIZE 1328
 int runtime_savedata_param(int32_t user, const char *dir, void *param);
@@ -116,4 +127,15 @@ void runtime_json_report(void);
 const char *runtime_thread_name(void *handle);
 uint64_t runtime_memory_flexible_available(void);
 unsigned char *runtime_image_base(void);
+uint64_t runtime_image_size(void);
+/* Discord Rich Presence (runtime_presence.c): the game's state for scripts/discord_presence.py,
+ * written to GOW3_PRESENCE_FILE as JSON whenever it changes. Without a file every call is a no-op. */
+void runtime_presence_configure(const char *path);
+void runtime_presence_file(const char *guest_path); /* a game file the game opened */
+void runtime_presence_room(uint64_t room_id, unsigned members, unsigned slots); /* members 0: no room */
+void runtime_presence_song(const char *text); /* the custom soundtrack's song; "" or NULL: none */
+void runtime_presence_flush(void); /* writes a dirty state now, on this thread (tests) */
+int runtime_presence_json(char *out, size_t size); /* the state as JSON (tests) */
+unsigned runtime_presence_writes(void);
+void runtime_presence_report(void);
 #endif

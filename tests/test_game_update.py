@@ -1,5 +1,6 @@
 from paths import ROOT  # noqa: F401  (puts scripts/ on the path)
 import contextlib
+import os
 import shutil
 import sys
 import tempfile
@@ -24,7 +25,7 @@ def no_links_but_hard_links():
         Path(dst).mkdir()
         raise PermissionError(5, 'Access is denied')
     return (mock.patch.object(Path, 'symlink_to', side_effect=PermissionError(5, 'Access is denied')),
-            mock.patch('mods.os.name', 'nt'),
+            mock.patch('mods.os', types.SimpleNamespace(**{**vars(os), 'name': 'nt'})),
             mock.patch.dict(sys.modules, {'_winapi': types.SimpleNamespace(CreateJunction=create_junction)}))
 
 
@@ -70,6 +71,28 @@ class GameUpdateTests(unittest.TestCase):
         self.assertEqual((self.base / 'eboot.bin').read_text(), 'base eboot')
         self.assertEqual((self.base / 'sce_sys/icon0.png').read_text(), 'old icon')
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows redirection trust policy')
+    def test_view_under_redirection_trust_policy(self):
+        # Armoury Crate (ROG Ally) starts games with the redirection trust policy: the process and
+        # its children may not follow folder links a non-administrator made (WinError 448, #78).
+        script = (
+            "import ctypes, sys\n"
+            "from pathlib import Path\n"
+            "from unittest import mock\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "flag = ctypes.c_ulong(1)\n"
+            "assert ctypes.windll.kernel32.SetProcessMitigationPolicy(16, ctypes.byref(flag), 4)\n"
+            "import game_update, mods\n"
+            "with mock.patch('patches.game_title_id', side_effect=['CUSA01623', 'CUSA01623']):\n"
+            "    view = game_update.create_view(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))\n"
+            "print((view / 'EXEC/WAD/A.WAD').read_text(), (view / 'eboot.bin').read_text().replace(' ', '_'), mods.MIRROR_DIRECTORIES)\n")
+        import subprocess
+        done = subprocess.run([sys.executable, '-I', '-c', script, str(ROOT / 'scripts'), str(self.base),
+                               str(self.update), str(self.out)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.split(), ['wad', 'update_eboot', 'True'])
+        self.assertEqual((self.base / 'EXEC/WAD/A.WAD').read_text(), 'wad')
+
     def test_a_network_share_without_junctions_mirrors_the_tree(self):
         # A network share (SMB) refuses symlinks and junctions alike; only hard links work.
         # create_view must still build a view of real files and leave the dumps untouched.
@@ -88,6 +111,38 @@ class GameUpdateTests(unittest.TestCase):
         self.assertFalse(view.exists())
         self.assertEqual((self.base / 'EXEC/WAD/A.WAD').read_text(), 'wad')
         self.assertEqual((self.base / 'sce_sys/icon0.png').read_text(), 'old icon')
+
+    def test_under_wine_the_view_has_no_links(self):
+        # Proton (#39): the game could not read through folder links, so under Wine every folder
+        # is a real directory and every file a hard link.
+        with mock.patch('mods.WINE', True), mock.patch('mods.MIRROR_DIRECTORIES', True), \
+                mock.patch('mods.os', types.SimpleNamespace(**{**vars(os), 'name': 'nt'})):
+            view = self.view()
+        self.assertFalse(is_link(view / 'EXEC'))
+        self.assertFalse(any(p.is_symlink() for p in view.rglob('*')))
+        self.assertEqual((view / 'EXEC/WAD/A.WAD').read_text(), 'wad')
+        self.assertEqual((view / 'eboot.bin').read_text(), 'update eboot')
+
+    def test_a_drive_without_links_keeps_large_files_out_of_the_view(self):
+        # #63: exFAT has no symlinks, junctions or hard links: the large files (the archives) are
+        # not copied but listed for the game to read in place; small ones are still copied.
+        write(self.base / 'data00.psarc', 'base archive, large')
+        write(self.update / 'data09.psarc', 'update archive, large')
+        unlinked = {}
+        with contextlib.ExitStack() as stack:
+            for patcher in no_links_but_hard_links():
+                stack.enter_context(patcher)
+            stack.enter_context(mock.patch('mods.os.link', side_effect=OSError(1, 'Incorrect function')))
+            stack.enter_context(mock.patch('mods.LARGE_FILE', len('base archive, large')))
+            with mock.patch('patches.game_title_id', side_effect=['CUSA01623'] * 2):
+                view = game_update.create_view(self.base, self.update, self.out, unlinked)
+        self.assertEqual(unlinked, {str(view / 'data00.psarc'): self.base / 'data00.psarc',
+                                    str(view / 'data09.psarc'): self.update / 'data09.psarc'})
+        self.assertFalse((view / 'data00.psarc').exists())
+        self.assertEqual((view / 'eboot.bin').read_text(), 'update eboot')
+        self.assertEqual((view / 'EXEC/WAD/A.WAD').read_text(), 'wad')
+        import mods
+        self.assertIsNone(mods.UNLINKED)
 
     def test_different_titles_and_nested_folders_are_refused(self):
         with self.assertRaises(ValueError):

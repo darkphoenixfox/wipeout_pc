@@ -73,6 +73,10 @@ struct Values {
     std::atomic<bool> fsr1{false};
     std::atomic<bool> rcas{true};
     std::atomic<int> rcas_strength{75};
+    /// HDR output (post_process.frag): brightness in percent and the highlight peak in nits
+    /// (10000: no limit). Live. hdr_active is set by the presenter: the output is HDR.
+    std::atomic<int> hdr_brightness{100}, hdr_peak{10000};
+    std::atomic<bool> hdr_active{false};
     /// Set by the presenter: sharpening ran on the last frame (it needs FSR 1 when the game's
     /// image is smaller than the window).
     std::atomic<bool> rcas_applied{false};
@@ -93,6 +97,8 @@ struct Values {
     std::atomic<int> hud_aspect{0};
     /// Controller vibration strength in percent; 0 turns it off (runtime_pad.c). Live.
     std::atomic<int> vibration{100};
+    /// Stick deadzone in percent of the stick's reach, both sticks; 0 leaves the game's (#60). Live.
+    std::atomic<int> stick_deadzone{0};
     /// Mouse movement in px that counts as one step of a stick prompt (runtime_pad.c). Live.
     std::atomic<int> mouse_prompt_distance{48};
     /// Keep the mouse in the game window while the game has it (window.cpp). Live.
@@ -105,8 +111,15 @@ struct Values {
     /// in random order. Live.
     std::atomic<bool> music{true};
     std::atomic<bool> music_shuffle{true};
+    /// A race goes on with the song that was playing, from where it stopped (#93). Live.
+    std::atomic<bool> music_continue{false};
     /// Their loudness in percent, 0 to 200; 100 is about the game's own music. Live.
     std::atomic<int> music_volume{100};
+    /// The game's own music in percent, 0 to 300 (#97: above its 100% in the game's options). Live.
+    std::atomic<int> game_music_volume{100};
+    /// The game's HUD and menus are not drawn (F8, in-game Game tab; photo mode pictures, #68).
+    /// This session only, never saved.
+    std::atomic<bool> hide_hud{false};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".
     std::atomic<int> render_resolution{0};
     std::atomic<int> engine_fps{120};

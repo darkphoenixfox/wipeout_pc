@@ -82,8 +82,17 @@ static int make_dirs(const char *path) {
     for (char *p=buffer+1;*p;++p) if (*p=='/') { *p=0; mkdir(buffer,0755); *p='/'; }
     return mkdir(buffer,0755) && errno!=EEXIST ? -1 : 0;
 }
+/* GOW3_SAVEDATA_DIR: the saves in a folder of their own (a network share between two PCs, #86)
+ * instead of <user>/savedata; the caches stay in the user folder. */
+static int valid_name(const char *name, size_t max);
+/* GOW3_PROFILE (launcher: Game > Profile, #162): that profile's saves in profiles/<name> of the
+ * save data folder, so one backup of the folder holds every profile. */
 static void root(int32_t user, const char *title, char *out, size_t size) {
-    snprintf(out,size,"%s/savedata/%d/%s",runtime_file_user_dir(),user,title && *title ? title : title_id);
+    const char *own=getenv("GOW3_SAVEDATA_DIR"), *profile=getenv("GOW3_PROFILE");
+    const char *sub=profile && valid_name(profile,64) ? "/profiles/" : "", *name=*sub ? profile : "";
+    const char *game=title && *title ? title : title_id;
+    if (own && *own) snprintf(out,size,"%s%s%s/%d/%s",own,sub,name,user,game);
+    else snprintf(out,size,"%s/savedata%s%s/%d/%s",runtime_file_user_dir(),sub,name,user,game);
 }
 static int valid_name(const char *name, size_t max) {
     size_t n=strnlen(name,max);

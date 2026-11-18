@@ -40,6 +40,10 @@ static bool StartSize(s32& width, s32& height) {
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
     // Gamepads are sampled by runtime_pad.c; their events are pumped here with the window's.
+    // gow3: Wayland with display scaling and no fractional-scale support in the compositor (#174:
+    // MangoWC at 125% gave pixel density 1.00, a 2048x1152 picture stretched to 2560x1440): the
+    // window is drawn 1:1 in pixels. Wayland only; other video drivers ignore it.
+    SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_SCALE_TO_DISPLAY, "1");
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
     }
@@ -53,6 +57,11 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_MAXIMIZED_BOOLEAN, too_large);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
+    // gow3: Wayland with display scaling (#174, 125%): without it the picture is drawn at the
+    // logical size (2048x1152 on a 2560x1440 screen) and the compositor stretches it, blurred.
+    const char* video_driver = SDL_GetCurrentVideoDriver();
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
+                           video_driver && !std::strcmp(video_driver, "wayland"));
     base_title = title;
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
@@ -97,7 +106,15 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_GetWindowSizeInPixels(window, &w, &h);
     width = w;
     height = h;
-    LOG_INFO(Frontend, "Window {}x{} on {}", w, h, driver);
+    // gow3: in last_run.log for display-scaling reports (#174): the pixels the picture is drawn at,
+    // the window's size in points, and the scales SDL got from the system.
+    int points_w = 0, points_h = 0;
+    SDL_GetWindowSize(window, &points_w, &points_h);
+    const int sdl = SDL_GetVersion();
+    std::printf("Window: %dx%d pixels, %dx%d points, pixel density %.2f, display scale %.2f, video driver %s, SDL %d.%d.%d\n",
+                w, h, points_w, points_h, SDL_GetWindowPixelDensity(window), SDL_GetWindowDisplayScale(window),
+                driver ? driver : "?", SDL_VERSIONNUM_MAJOR(sdl), SDL_VERSIONNUM_MINOR(sdl), SDL_VERSIONNUM_MICRO(sdl));
+    std::fflush(stdout);
 }
 
 // Windowed, borderless (desktop-sized, no mode change) or exclusive fullscreen at the desktop
@@ -188,6 +205,11 @@ bool WindowSDL::PollEvents() {
             UpdateTextTitle();
             continue;
         }
+        // The overlay consumes mouse events below, so refresh its cursor timer before passing
+        // them on. Moving the mouse always brings the system cursor back.
+        if (event.type == SDL_EVENT_MOUSE_MOTION && Gow3Overlay::CapturesInput()) {
+            cursor_hide_at = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        }
         if (Gow3Overlay::HandleEvent(event)) {
             continue;
         }
@@ -216,13 +238,23 @@ bool WindowSDL::PollEvents() {
     // another window or the game's pause menu (the pause key) get it back. Taken back, it starts
     // at the window's centre; let go by the pause key, the system cursor shows.
     const bool paused = mouse_paused.load(std::memory_order_relaxed);
+    const bool overlay = Gow3Overlay::CapturesInput();
+    const auto now = std::chrono::steady_clock::now();
+    if (overlay && !overlay_capturing) {
+        // Opening the menu should reveal the pointer even before its first movement.
+        cursor_hide_at = now + std::chrono::seconds(2);
+    }
+    overlay_capturing = overlay;
     const bool lock = Gow3Settings::Get().mouse_lock.load(std::memory_order_relaxed) && !text_active && !paused &&
-                      !Gow3Overlay::CapturesInput() && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);
+                      !overlay && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);
     if (lock != mouse_locked) {
         if (lock) SDL_WarpMouseInWindow(window, width / 2.0f, height / 2.0f);
         if (SDL_SetWindowRelativeMouseMode(window, lock)) mouse_locked = lock;
     }
-    if (const bool show = paused && !mouse_locked; show != cursor_shown) {
+    // Use SDL's normal cursor for menus; after two seconds of overlay inactivity, hide it just
+    // like a game cursor, without adding another composited draw layer.
+    const bool show = !mouse_locked && (paused || (overlay && now < cursor_hide_at));
+    if (show != cursor_shown) {
         show ? SDL_ShowCursor() : SDL_HideCursor();
         cursor_shown = show;
     }

@@ -22,6 +22,14 @@ int gow3gpu_init(const Gow3GpuConfig *config);
 uintptr_t gow3gpu_resolve(const char *scoped_nid);
 /* Called first by the loader's SIGSEGV handler: 1 when a GPU page-tracking fault was handled. */
 int gow3gpu_handle_fault(void *ucontext, void *address);
+/* GOW3_CPU_PROFILE (Windows): the threads it samples and the counters it reports per frame.
+ * The game thread that flips frames, the GPU command thread and the frames shown so far: */
+void gow3gpu_frame_threads(unsigned long *game_thread, unsigned long *gpu_thread, uint64_t *frames);
+/* The draw recording thread, the TSC cycles the GPU command thread waited for it, and the
+ * Vulkan recording thread: */
+void gow3gpu_draw_rec_thread(unsigned long *thread, uint64_t *drain_cycles, unsigned long *vk_recorder);
+/* Draws, dispatches and graphics submissions so far: */
+void gow3gpu_draw_counts(uint64_t *draws, uint64_t *dispatches, uint64_t *submissions);
 /* GOW3_WRITE_LOG=1: prints the logged GPU-side writes to guest memory near the fault. */
 void gow3gpu_dump_guest_writes(void *ucontext);
 /* Keyboard text entry through the game window (IME dialog). begin returns 0 when
@@ -35,8 +43,12 @@ int gow3gpu_choice_begin(const char *title, const char *const *items, const char
 int gow3gpu_choice_poll(void);
 /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
 int gow3gpu_overlay_captures_input(void);
+/* 1 while L1 + R1 are held with 3D on: the D-pad adjusts 3D depth and focus, not the game. */
+int gow3gpu_overlay_stereo_combo(void);
 /* Controller vibration strength set in the menu, 0 (off) to 100 (the game's own). */
 int gow3gpu_vibration_percent(void);
+/* Stick deadzone set in the menu or the launcher, in percent of the stick's reach (0: off). */
+int gow3gpu_stick_deadzone_percent(void);
 /* The video decoder handed the game a picture: a cutscene is on screen (the presenter draws
  * black bars outside its 16:9 picture when the render resolution is not 16:9). */
 void gow3gpu_movie_picture(void);
@@ -44,11 +56,17 @@ void gow3gpu_movie_picture(void);
 void gow3gpu_request_screenshot(void);
 /* A short message in the lower right corner for a few seconds (the custom soundtrack's track). */
 void gow3gpu_notice(const char *utf8);
+/* The game freed a block of its GPU heap: cached images wholly inside it are dropped. */
+void gow3gpu_guest_heap_freed(uintptr_t address, uint64_t size);
 /* gow3.ini "music" and "music_shuffle": the player's songs play, in random order (runtime_music.c). */
 int gow3gpu_music_on(void);
 int gow3gpu_music_shuffle(void);
+/* gow3.ini "music_continue": a race goes on with the song that was playing (#93). */
+int gow3gpu_music_continue(void);
 /* gow3.ini "music_volume": their loudness in percent (100: about the game's own music). */
 int gow3gpu_music_volume(void);
+/* gow3.ini "game_music_volume": the game's own music in percent, 0 to 300 (#97). */
+int gow3gpu_game_music_volume(void);
 /* Mouse movement in px that counts as one step of a stick prompt, set in the menu. */
 int gow3gpu_mouse_prompt_distance(void);
 /* The pause key (touchpad right) was pressed: it lets go of the mouse lock, or takes it back. */

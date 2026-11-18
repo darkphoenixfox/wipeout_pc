@@ -126,6 +126,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         for (int a = 0; a < HudAspectCount; ++a) {
             if (value == HudAspectKeys[a]) v.hud_aspect = a;
         }
+    } else if (key == "hdr_brightness") {
+        v.hdr_brightness = value.empty() ? 100 : std::clamp(i, 10, 200);
+    } else if (key == "hdr_peak") {
+        v.hdr_peak = value.empty() ? 10000 : std::clamp(i, 100, 10000);
     } else if (key == "frames_queued") {
         v.frames_queued = Gow3Graphics::ParseFramesQueued(value.empty() ? -1 : i);
     } else if (key == "render_resolution") {
@@ -140,6 +144,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.anisotropy = Gow3Graphics::ParseAnisotropy(i);
     } else if (key == "vibration") {
         v.vibration = value.empty() ? 100 : std::clamp(i, 0, 100);
+    } else if (key == "stick_deadzone") {
+        v.stick_deadzone = std::clamp(i, 0, 50);
     } else if (key == "mouse_prompt_distance") {
         v.mouse_prompt_distance = value.empty() ? 48 : std::clamp(i, 16, 200);
     } else if (key == "mouse_lock") {
@@ -148,8 +154,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.music = value.empty() || i != 0;
     } else if (key == "music_shuffle") {
         v.music_shuffle = value.empty() || i != 0;
+    } else if (key == "music_continue") {
+        v.music_continue = !value.empty() && i != 0;
     } else if (key == "music_volume") {
         v.music_volume = value.empty() ? 100 : std::clamp(i, 0, 200);
+    } else if (key == "game_music_volume") {
+        v.game_music_volume = value.empty() ? 100 : std::clamp(i, 0, 300);
     } else if (key == "mouse_aim_style") {
         v.mouse_aim_style = std::clamp(i, 0, 1);
     } else if (key == "mouse_aim_sensitivity") {
@@ -227,7 +237,7 @@ void Load() {
         {"GOW3_STALE_READBACK", "stale_readback"},     {"GOW3_FSR1", "fsr1"},
         {"GOW3_RCAS", "rcas"},                        {"GOW3_FRAMES_AHEAD", "frames_queued"},
         {"GOW3_STEREO", "stereo"},
-        {"GOW3_ANISOTROPY", "anisotropy"},            {"GOW3_VIBRATION", "vibration"},
+        {"GOW3_ANISOTROPY", "anisotropy"},            {"GOW3_VIBRATION", "vibration"}, {"GOW3_STICK_DEADZONE", "stick_deadzone"},
         {"GOW3_MOUSE_PROMPT_DISTANCE", "mouse_prompt_distance"}, {"GOW3_MOUSE_LOCK", "mouse_lock"},
         {"GOW3_MOUSE_AIM_STYLE", "mouse_aim_style"}, {"GOW3_MOUSE_AIM_SENSITIVITY", "mouse_aim_sensitivity"},
     };
@@ -339,6 +349,7 @@ void Save() {
                  int(v.cheats[3].load()), int(v.cheats[4].load()),
                  int(v.cheats[5].load()), int(v.cheats[6].load()));
     std::fprintf(file, "enemy_health_bar=%d\n", int(v.enemy_health_bar.load()));
+    std::fprintf(file, "hdr_brightness=%d\nhdr_peak=%d\n", v.hdr_brightness.load(), v.hdr_peak.load());
     std::fprintf(file,
                  "overlay_fps=%d\noverlay_frametime=%d\noverlay_upscaler=%d\noverlay_gpu=%d\n"
                  "overlay_cpu=%d\noverlay_ram=%d\noverlay_vram=%d\noverlay_scale=%d\noverlay_corner=%d\n"
@@ -360,10 +371,12 @@ void Save() {
                  v.engine_fps.load(), int(v.deferred_readback.load()), int(v.stale_readback.load()),
                  int(v.restart_unconfirmed.load()));
     std::fprintf(file, "anisotropy=%d\nvibration=%d\nmouse_prompt_distance=%d\nmouse_lock=%d\nmouse_aim_style=%d\n"
-                       "mouse_aim_sensitivity=%d\nmusic=%d\nmusic_shuffle=%d\nmusic_volume=%d\n",
+                       "mouse_aim_sensitivity=%d\nmusic=%d\nmusic_shuffle=%d\nmusic_volume=%d\n"
+                       "stick_deadzone=%d\nmusic_continue=%d\ngame_music_volume=%d\n",
                  v.anisotropy.load(), v.vibration.load(), v.mouse_prompt_distance.load(), int(v.mouse_lock.load()),
                  v.mouse_aim_style.load(), v.mouse_aim_sensitivity.load(), int(v.music.load()),
-                 int(v.music_shuffle.load()), v.music_volume.load());
+                 int(v.music_shuffle.load()), v.music_volume.load(), v.stick_deadzone.load(),
+                 int(v.music_continue.load()), v.game_music_volume.load());
     std::fprintf(file, "stereo=%d\nstereo_depth=%d\nstereo_focus=%d\nstereo_popout=%d\nstereo_swap=%d\nstereo_output=%s\nhud_aspect=%s\n",
                  int(v.stereo.load()), v.stereo_depth.load(), v.stereo_focus.load(),
                  v.stereo_popout.load(), int(v.stereo_swap.load()),
