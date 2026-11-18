@@ -10,6 +10,7 @@ static int capture;
 static int vibration_percent=100;
 static uint16_t rumble_low, rumble_high;
 int gow3gpu_overlay_captures_input(void) { return capture; }
+int gow3gpu_overlay_stereo_combo(void) { return 0; }
 int gow3gpu_vibration_percent(void) { return vibration_percent; }
 
 static bool SDLCALL record_rumble(void *userdata, uint16_t low, uint16_t high) {

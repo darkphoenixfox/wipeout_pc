@@ -466,6 +466,8 @@ static void sample_host(PadData *d) {
     if (g) {
         for (size_t i=0;i<pad_map.count;++i)
             if (SDL_GetGamepadButton(g,(SDL_GamepadButton)pad_map.entries[i].source)) d->buttons|=pad_map.entries[i].ps;
+        /* L1 + R1 + D-pad adjusts 3D depth and focus (gow3_overlay.cpp): the D-pad is not the game's. */
+        if (gow3gpu_overlay_stereo_combo()) d->buttons&=~(uint32_t)(BTN_UP|BTN_RIGHT|BTN_DOWN|BTN_LEFT);
         const uint32_t mapped=d->buttons;
         d->left_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTX)); d->left_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTY));
         d->right_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTX)); d->right_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTY));

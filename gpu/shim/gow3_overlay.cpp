@@ -985,7 +985,49 @@ void Notice() {
     ImGui::End();
 }
 
+// L1 + R1 held with the D-pad, outside the menu: 3D depth (left/right) and 3D focus
+// (down/up), one step per press and repeating while held. Saved when the D-pad is released.
+// On the keyboard: Ctrl+F3 / Ctrl+F4 for depth, Ctrl+F5 / Ctrl+F6 for focus (lower / higher).
+bool l1_down = false, r1_down = false; // imgui_mutex
+std::atomic<bool> stereo_combo{false};
+std::atomic<int> stereo_dir{0}; // 0 none, else the held D-pad button + 1
+std::atomic<s64> stereo_repeat_at{0};
+std::atomic<bool> stereo_unsaved{false};
+std::atomic<int> stereo_key{0}; // the held F3..F6 key, saved on its release
+
+void StereoStep(int button) {
+    auto& s = Gow3Settings::Get();
+    const bool depth = button == SDL_GAMEPAD_BUTTON_DPAD_LEFT || button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+    const int delta = button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || button == SDL_GAMEPAD_BUTTON_DPAD_UP ? 1 : -1;
+    auto& value = depth ? s.stereo_depth : s.stereo_focus;
+    value = std::clamp(value.load() + delta, depth ? 0 : 1, 100);
+    stereo_unsaved = true;
+    ShowNotice("3D depth " + std::to_string(s.stereo_depth.load()) + "   3D focus " +
+                   std::to_string(s.stereo_focus.load()),
+               1500);
+}
+
+// Present thread, every frame.
+void StereoRepeat() {
+    const int dir = stereo_dir.load();
+    if (!dir || !stereo_combo) {
+        if (!stereo_key && stereo_unsaved.exchange(false)) {
+            Gow3Settings::Save();
+        }
+        return;
+    }
+    const s64 now = NowMs();
+    if (now >= stereo_repeat_at.load()) {
+        StereoStep(dir - 1);
+        stereo_repeat_at = now + 60;
+    }
+}
+
 } // namespace
+
+bool StereoCombo() {
+    return stereo_combo;
+}
 
 void ShowNotice(const std::string& text, int milliseconds) {
     {
@@ -1198,6 +1240,20 @@ bool HandleEvent(const SDL_Event& event) {
             SetOpen(event.key.key == SDLK_INSERT ? !is_open : false);
             return true;
         }
+        if (const SDL_Keycode key = event.key.key; key >= SDLK_F3 && key <= SDLK_F6) {
+            if (!down) {
+                if (stereo_key == int(key)) {
+                    stereo_key = 0;
+                }
+            } else if ((event.key.mod & SDL_KMOD_CTRL) && !is_open && Gow3Settings::Get().stereo) {
+                stereo_key = int(key);
+                StereoStep(key == SDLK_F3   ? SDL_GAMEPAD_BUTTON_DPAD_LEFT
+                           : key == SDLK_F4 ? SDL_GAMEPAD_BUTTON_DPAD_RIGHT
+                           : key == SDLK_F5 ? SDL_GAMEPAD_BUTTON_DPAD_DOWN
+                                            : SDL_GAMEPAD_BUTTON_DPAD_UP);
+                return true;
+            }
+        }
         if (!is_open) {
             return false;
         }
@@ -1219,6 +1275,28 @@ bool HandleEvent(const SDL_Event& event) {
             if (down && l2_down) {
                 SetOpen(!is_open);
                 return true;
+            }
+        }
+        if (button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
+            l1_down = down;
+        } else if (button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
+            r1_down = down;
+        }
+        const bool combo = l1_down && r1_down && !menu_open && Gow3Settings::Get().stereo;
+        stereo_combo = combo;
+        if (!combo) {
+            stereo_dir = 0;
+        }
+        if (button == SDL_GAMEPAD_BUTTON_DPAD_UP || button == SDL_GAMEPAD_BUTTON_DPAD_DOWN ||
+            button == SDL_GAMEPAD_BUTTON_DPAD_LEFT || button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+            if (down && combo) {
+                StereoStep(button);
+                stereo_repeat_at = NowMs() + 400;
+                stereo_dir = button + 1;
+                return true;
+            }
+            if (!down && stereo_dir == button + 1) {
+                stereo_dir = 0;
             }
         }
         if (!is_open) {
@@ -1351,6 +1429,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
         frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
     }
     ConfirmRestart();
+    StereoRepeat();
     if (!Visible()) {
         return;
     }
